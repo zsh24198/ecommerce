@@ -1,0 +1,32 @@
+# Binaries
+*.exe
+/bin/
+/cmd/server/server
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+
+# Env & secrets
+.env
+.env.local
+*.pem
+*.key
+
+# Logs & runtime
+logs/
+*.log
+tmp/
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Local DB data
+mysql_data/
+redis_data/
+kafka_data/
