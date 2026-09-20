@@ -1,0 +1,35 @@
+server:
+  mode: debug
+  port: 8080
+
+mysql:
+  host: 127.0.0.1
+  port: 3306
+  user: ecommerce
+  password: ecommerce123456
+  dbname: ecommerce
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: 1h
+
+redis:
+  host: 127.0.0.1
+  port: 6379
+  password: redis123456
+  db: 0
+  pool_size: 20
+  dial_timeout: 3s
+  read_timeout: 3s
+  write_timeout: 3s
+
+log:
+  level: debug
+  filename: ./logs/app.log
+  max_size: 100
+  max_backups: 5
+  max_age: 30
+
+jwt:
+  secret: dev-only-secret-change-me
+  access_ttl: 2h
+  refresh_ttl: 168h

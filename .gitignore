@@ -30,3 +30,4 @@ coverage.html
 mysql_data/
 redis_data/
 kafka_data/
+configs/config.yaml
