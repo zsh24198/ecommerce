@@ -31,3 +31,6 @@ mysql_data/
 redis_data/
 kafka_data/
 configs/config.yaml
+
+# Temporary test programs
+cmd/logtest/
