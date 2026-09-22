@@ -20,7 +20,7 @@ const (
 	CodeStockNotEnough = 5001 // 库存不足
 	CodeOrderIllegal   = 5002 // 订单状态非法
 	CodeUserExists     = 5003 // 用户已存在
-	CodeUserNotFound   = 5004 // 用a户不存在
+	CodeUserNotFound   = 5004 // 用户不存在
 
 	CodeRateLimited = 6001 // 触发限流
 	CodeDegraded    = 6002 // 服务降级
