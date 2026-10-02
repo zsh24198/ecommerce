@@ -17,6 +17,9 @@ type AppError struct {
 var (
 	ErrUserNotFound = &AppError{Code: CodeUserNotFound, Msg: "用户不存在"}
 	ErrUserExists   = &AppError{Code: CodeUserExists, Msg: "用户已存在"}
+	ErrUserCreds    = &AppError{Code: CodeUserCreds, Msg: "手机号或密码错误"}
+	ErrUserBanned   = &AppError{Code: CodeUserBanned, Msg: "账号已被封禁"}
+	ErrTokenInvalid = &AppError{Code: CodeTokenInvalid, Msg: "token 无效"}
 	ErrInternal     = &AppError{Code: CodeUnknown, Msg: "系统繁忙，请稍后再试"}
 )
 

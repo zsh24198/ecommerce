@@ -21,6 +21,8 @@ const (
 	CodeOrderIllegal   = 5002 // 订单状态非法
 	CodeUserExists     = 5003 // 用户已存在
 	CodeUserNotFound   = 5004 // 用户不存在
+	CodeUserCreds      = 5005 // 手机号或密码错误
+	CodeUserBanned     = 5006 // 账号已被封禁
 
 	CodeRateLimited = 6001 // 触发限流
 	CodeDegraded    = 6002 // 服务降级

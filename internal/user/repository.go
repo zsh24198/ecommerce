@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
@@ -23,6 +24,16 @@ type UserRepository interface {
 	// Create 创建用户，phone 唯一索引冲突时返回 apperror.ErrUserExists。
 	// 创建成功后自增 ID 会写回 user.ID（因为传的是指针）。
 	Create(ctx context.Context, user *User) error
+
+	// CreateRefreshToken 写入一条 refresh token 记录（只存哈希）。
+	CreateRefreshToken(ctx context.Context, rt *RefreshToken) error
+
+	// GetRefreshTokenByHash 按哈希查询记录，查不到返回 apperror.ErrTokenInvalid。
+	GetRefreshTokenByHash(ctx context.Context, hash string) (*RefreshToken, error)
+
+	// RevokeRefreshToken 将指定哈希的记录原子作废（条件更新，见实现注释）。
+	// 记录不存在或已被作废（影响行数为 0）时返回 apperror.ErrTokenInvalid。
+	RevokeRefreshToken(ctx context.Context, hash string) error
 }
 
 // userRepo 是 UserRepository 的 GORM 实现。
@@ -94,4 +105,41 @@ func isDuplicateKeyErr(err error) bool {
 		return mysqlErr.Number == 1062
 	}
 	return strings.Contains(err.Error(), "Duplicate entry")
+}
+
+// CreateRefreshToken 写入 refresh token 记录。
+func (r *userRepo) CreateRefreshToken(ctx context.Context, rt *RefreshToken) error {
+	if err := r.db.WithContext(ctx).Create(rt).Error; err != nil {
+		return apperror.Wrap(apperror.CodeUnknown, "写入refresh token失败", err)
+	}
+	return nil
+}
+
+// GetRefreshTokenByHash 按哈希查询 refresh token 记录。
+func (r *userRepo) GetRefreshTokenByHash(ctx context.Context, hash string) (*RefreshToken, error) {
+	var rt RefreshToken
+	err := r.db.WithContext(ctx).Where("token_hash = ?", hash).First(&rt).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 查不到 = 已轮换/已吊销/伪造，对上层统一呈现为 token 无效。
+			return nil, apperror.ErrTokenInvalid
+		}
+		return nil, apperror.Wrap(apperror.CodeUnknown, "查询refresh token失败", err)
+	}
+	return &rt, nil
+}
+
+// RevokeRefreshToken 条件更新作废：WHERE 带 revoked_at IS NULL，
+// 并发刷新同一 token 时只有一个请求影响行数为 1（败者被拒），关闭 TOCTOU 竞态窗口。
+func (r *userRepo) RevokeRefreshToken(ctx context.Context, hash string) error {
+	res := r.db.WithContext(ctx).Model(&RefreshToken{}).
+		Where("token_hash = ? AND revoked_at IS NULL", hash).
+		Update("revoked_at", time.Now())
+	if res.Error != nil {
+		return apperror.Wrap(apperror.CodeUnknown, "吊销refresh token失败", res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return apperror.ErrTokenInvalid
+	}
+	return nil
 }
