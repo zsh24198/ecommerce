@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
+	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/internal/user"
 	"github.com/zsh24198/ecommerce/shared/config"
 	"github.com/zsh24198/ecommerce/shared/jwtx"
@@ -63,6 +64,18 @@ func main() {
 		users.POST("/register", h.Register)
 		users.POST("/login", h.Login)
 		users.POST("/refresh", h.RefreshToken)
+	}
+
+	// 6.1 商品模块装配：repo → service → handler → 路由
+	pRepo := product.NewProductRepository(db)
+	pSvc := product.NewProductService(pRepo)
+	pHandler := product.NewHandler(pSvc)
+	products := r.Group("/api/v1/products")
+	{
+		products.POST("", pHandler.CreateProduct)
+		products.GET("", pHandler.ListProducts)
+		products.GET("/:id", pHandler.GetProductDetail)
+		products.PUT("/:id/status", pHandler.UpdateSPUStatus)
 	}
 
 	// 7. 启动
