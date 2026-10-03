@@ -23,6 +23,8 @@ func httpStatusOf(code int) int {
 	switch {
 	case code >= 6000:
 		return http.StatusTooManyRequests
+	case code >= 5000:
+		return http.StatusOK // 5000 段业务错误：HTTP 200，靠 body code 区分
 	case code >= 4000:
 		return http.StatusBadGateway
 	case code >= 3000:
