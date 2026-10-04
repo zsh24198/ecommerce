@@ -23,7 +23,12 @@ var (
 	ErrSkuNotFound     = &AppError{Code: CodeSkuNotFound, Msg: "商品规格不存在"}
 	ErrStockNotEnough  = &AppError{Code: CodeStockNotEnough, Msg: "库存不足"}
 	ErrOrderIllegal    = &AppError{Code: CodeOrderIllegal, Msg: "订单状态非法"}
+	ErrPaymentNotFound = &AppError{Code: CodePaymentNotFound, Msg: "支付单不存在"}
+	ErrPaymentAmount   = &AppError{Code: CodePaymentAmountErr, Msg: "支付金额不匹配"}
+	ErrPaymentSign     = &AppError{Code: CodePaymentSignInvalid, Msg: "支付回调签名无效"}
+	ErrOrderNotPending = &AppError{Code: CodeOrderNotPending, Msg: "订单非待支付状态"}
 	ErrTokenInvalid    = &AppError{Code: CodeTokenInvalid, Msg: "token 无效"}
+	ErrForbidden       = &AppError{Code: CodeForbidden, Msg: "权限不足"}
 	ErrInternal        = &AppError{Code: CodeUnknown, Msg: "系统繁忙，请稍后再试"}
 )
 

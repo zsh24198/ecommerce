@@ -16,6 +16,9 @@ type OrderRepository interface {
 	// CreateOrderWithItems 在事务内完成：扣库存 → 写订单主表 → 写订单明细。
 	// skuItems 是已校验过的 SKU 列表（含真实单价与商品名快照），任一步失败整体回滚。
 	CreateOrderWithItems(ctx context.Context, order *Order, items []OrderItem, skuItems []SkuStockItem) error
+
+	// GetOrderByOrderNo 按订单号查询订单，未找到返回 nil（供 payment 模块跨域读）。
+	GetOrderByOrderNo(ctx context.Context, orderNo string) (*Order, error)
 }
 
 // SkuStockItem 扣库存所需的 SKU 信息：由 service 层从 product 模块查询后传入。
@@ -77,6 +80,18 @@ func (r *orderRepo) CreateOrderWithItems(ctx context.Context, order *Order, item
 
 		return nil
 	})
+}
+
+// GetOrderByOrderNo 按订单号查询订单，未找到返回 nil + nil。
+func (r *orderRepo) GetOrderByOrderNo(ctx context.Context, orderNo string) (*Order, error) {
+	o := &Order{}
+	if err := r.db.WithContext(ctx).Where("order_no = ? AND deleted_at IS NULL", orderNo).First(o).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, apperror.Wrap(apperror.CodeUnknown, "查询订单失败", err)
+	}
+	return o, nil
 }
 
 // isDuplicateKeyErr 判断是否为 MySQL 唯一索引冲突错误（1062）。

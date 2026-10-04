@@ -9,11 +9,12 @@ import (
 )
 
 type Config struct {
-	Server ServerConfig `mapstructure:"server"`
-	MySQL  MySQLConfig  `mapstructure:"mysql"`
-	Redis  RedisConfig  `mapstructure:"redis"`
-	Log    LogConfig    `mapstructure:"log"`
-	JWT    JWTConfig    `mapstructure:"jwt"`
+	Server  ServerConfig  `mapstructure:"server"`
+	MySQL   MySQLConfig   `mapstructure:"mysql"`
+	Redis   RedisConfig   `mapstructure:"redis"`
+	Log     LogConfig     `mapstructure:"log"`
+	JWT     JWTConfig     `mapstructure:"jwt"`
+	Payment PaymentConfig `mapstructure:"payment"`
 }
 
 type ServerConfig struct {
@@ -55,6 +56,13 @@ type JWTConfig struct {
 	Secret     string        `mapstructure:"secret"`
 	AccessTTL  time.Duration `mapstructure:"access_ttl"`
 	RefreshTTL time.Duration `mapstructure:"refresh_ttl"`
+}
+
+// PaymentConfig 支付模块配置。
+type PaymentConfig struct {
+	// SignSecret 支付回调签名密钥（商户与支付平台约定的共享密钥），用于 HMAC-SHA256 验签。
+	// 生产环境应通过环境变量 ECOMMERCE_PAYMENT_SIGN_SECRET 注入，禁止硬编码到代码。
+	SignSecret string `mapstructure:"sign_secret"`
 }
 
 func Load(path string) (*Config, error) {

@@ -12,6 +12,7 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/zsh24198/ecommerce/internal/order"
+	"github.com/zsh24198/ecommerce/internal/payment"
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/internal/user"
 	"github.com/zsh24198/ecommerce/shared/config"
@@ -94,6 +95,18 @@ func main() {
 	orders := r.Group("/api/v1/orders", middleware.JWT(jwtMgr))
 	{
 		orders.POST("", oHandler.CreateOrder)
+	}
+
+	// 6.3 支付模块装配：signer → repo → service（依赖 order.Service）→ handler
+	// 创建支付单需登录（JWT），回调接口由支付平台调用，无需 JWT，靠签名验证身份
+	signer := payment.NewSigner(cfg.Payment.SignSecret)
+	payRepo := payment.NewPaymentRepository(db)
+	paySvc := payment.NewPaymentService(payRepo, oSvc, signer)
+	payHandler := payment.NewHandler(paySvc)
+	payments := r.Group("/api/v1/payments")
+	{
+		payments.POST("", middleware.JWT(jwtMgr), payHandler.CreatePayment)
+		payments.POST("/callback", payHandler.Callback)
 	}
 
 	// 7. 启动

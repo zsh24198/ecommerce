@@ -26,11 +26,22 @@ type OrderItemReq struct {
 	Quantity int   `json:"quantity"  binding:"required,gt=0,lt=10000"`
 }
 
+// OrderInfo 订单信息 DTO，供跨域模块（如 payment）读取订单基本信息，避免暴露 model。
+type OrderInfo struct {
+	OrderNo     string
+	UserID      int64
+	TotalAmount int64
+	Status      OrderStatus
+}
+
 // OrderService 订单模块业务接口。
 type OrderService interface {
 	// CreateOrder 创建订单（含扣库存），返回订单号。
 	// idempotencyKey 由前端生成，用于防重复下单。
 	CreateOrder(ctx context.Context, userID int64, idempotencyKey string, req *CreateOrderReq) (string, error)
+
+	// GetOrderInfoByNo 按订单号查询订单基本信息，供 payment 模块创建支付单时校验订单归属与金额。
+	GetOrderInfoByNo(ctx context.Context, orderNo string) (*OrderInfo, error)
 }
 
 type orderService struct {
@@ -154,6 +165,23 @@ func (s *orderService) createOrderCore(ctx context.Context, userID int64, idempo
 		return "", err
 	}
 	return order.OrderNo, nil
+}
+
+// GetOrderInfoByNo 按订单号查询订单基本信息。
+func (s *orderService) GetOrderInfoByNo(ctx context.Context, orderNo string) (*OrderInfo, error) {
+	o, err := s.repo.GetOrderByOrderNo(ctx, orderNo)
+	if err != nil {
+		return nil, err
+	}
+	if o == nil {
+		return nil, apperror.ErrOrderIllegal
+	}
+	return &OrderInfo{
+		OrderNo:     o.OrderNo,
+		UserID:      o.UserID,
+		TotalAmount: o.TotalAmount,
+		Status:      o.Status,
+	}, nil
 }
 
 // genOrderNo 生成业务订单号：年月日时分秒 + 6位随机数。

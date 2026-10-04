@@ -29,6 +29,11 @@ const (
 	CodeSkuNotFound       = 5008 // SKU 不存在或不可售
 	CodeIdempotencyConflict = 5009 // 幂等冲突：请求处理中，请稍后重试
 
+	CodePaymentNotFound    = 5010 // 支付单不存在
+	CodePaymentAmountErr   = 5011 // 支付金额不匹配
+	CodePaymentSignInvalid = 5012 // 支付回调签名无效
+	CodeOrderNotPending    = 5013 // 订单非待支付状态，无法支付
+
 	CodeRateLimited = 6001 // 触发限流
 	CodeDegraded    = 6002 // 服务降级
 )
