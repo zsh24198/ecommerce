@@ -7,13 +7,15 @@ import (
 
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/shared/apperror"
+	redisclient "github.com/zsh24198/ecommerce/shared/redis"
 )
 
 // CreateOrderReq 下单请求 DTO。
 // 注意：不传金额，金额由服务端根据 SKU 真实单价计算，客户端不可信。
 type CreateOrderReq struct {
 	Items         []OrderItemReq `json:"items"         binding:"required,min=1,max=100,dive"`
-	ReceiverName  string         `json:"receiver_name" binding:"required,max=64"`
+	ReceiverName  string         `json:"receiver_name" binding:"required,ma
+	3.x=64"`
 	ReceiverPhone string         `json:"receiver_phone" binding:"required,len=11"`
 	ReceiverAddr  string         `json:"receiver_addr"  binding:"required,max=512"`
 }
@@ -27,24 +29,88 @@ type OrderItemReq struct {
 // OrderService 订单模块业务接口。
 type OrderService interface {
 	// CreateOrder 创建订单（含扣库存），返回订单号。
-	CreateOrder(ctx context.Context, userID int64, req *CreateOrderReq) (string, error)
+	// idempotencyKey 由前端生成，用于防重复下单。
+	CreateOrder(ctx context.Context, userID int64, idempotencyKey string, req *CreateOrderReq) (string, error)
 }
 
 type orderService struct {
 	repo    OrderRepository
 	product product.ProductService // 跨域调用：通过 product.Service 接口，不碰 product.Repository
+	redis   *redisclient.Client
 }
 
-func NewOrderService(repo OrderRepository, productSvc product.ProductService) OrderService {
-	return &orderService{repo: repo, product: productSvc}
+func NewOrderService(repo OrderRepository, productSvc product.ProductService, rdb *redisclient.Client) OrderService {
+	return &orderService{repo: repo, product: productSvc, redis: rdb}
 }
 
-// CreateOrder 下单主流程：
+// 幂等键在 Redis 中的占位符，表示首次请求正在处理中。
+const idempotencyProcessing = "processing"
+
+// 幂等键 Redis 过期时间：覆盖用户重试窗口（24h）。
+const idempotencyTTL = 24 * time.Hour
+
+// 轮询间隔与最大次数：最多等 500ms，覆盖正常订单创建耗时。
+const (
+	idempotencyPollInterval = 50 * time.Millisecond
+	idempotencyMaxPolls     = 10
+)
+
+// CreateOrder 带幂等的下单入口：
+// 1. 用 Redis SETNX 原子判断是否重复请求
+// 2. 首次请求：执行业务，成功存结果，失败删占位
+// 3. 重复请求：轮询等待首次请求的结果
+func (s *orderService) CreateOrder(ctx context.Context, userID int64, idempotencyKey string, req *CreateOrderReq) (string, error) {
+	rKey := fmt.Sprintf("idem:order:%d:%s", userID, idempotencyKey)
+
+	// SETNX 原子占位：成功=首次请求，失败=重复请求
+	ok, err := s.redis.SetNX(ctx, rKey, idempotencyProcessing, idempotencyTTL).Result()
+	if err != nil {
+		return "", apperror.Wrap(apperror.CodeRedisError, "redis setnx failed", err)
+	}
+
+	if !ok {
+		// 重复请求：轮询等待首次请求的结果
+		return s.pollIdempotencyResult(ctx, rKey)
+	}
+
+	// 首次请求：执行业务
+	orderNo, err := s.createOrderCore(ctx, userID, idempotencyKey, req)
+	if err != nil {
+		// 业务失败：删占位，允许用户重新下单
+		s.redis.Del(ctx, rKey)
+		return "", err
+	}
+
+	// 业务成功：存结果（覆盖占位符），后续重复请求直接返回
+	if err := s.redis.Set(ctx, rKey, orderNo, idempotencyTTL).Err(); err != nil {
+		// Redis 存结果失败不影响订单（DB 已有），仅丢失快路径幂等能力
+		return orderNo, nil
+	}
+	return orderNo, nil
+}
+
+// pollIdempotencyResult 轮询 Redis 获取首次请求的结果。
+// 拿到非 processing 的值即返回；超时则提示稍后重试。
+func (s *orderService) pollIdempotencyResult(ctx context.Context, rKey string) (string, error) {
+	for i := 0; i < idempotencyMaxPolls; i++ {
+		val, err := s.redis.Get(ctx, rKey).Result()
+		if err != nil {
+			return "", apperror.Wrap(apperror.CodeRedisError, "redis get failed", err)
+		}
+		if val != idempotencyProcessing {
+			return val, nil // 拿到订单号
+		}
+		time.Sleep(idempotencyPollInterval)
+	}
+	return "", apperror.New(apperror.CodeIdempotencyConflict, "请求处理中，请稍后重试")
+}
+
+// createOrderCore 下单核心业务（不含幂等逻辑）：
 // 1. 遍历商品，逐个查 SKU 拿真实单价与商品名（快照）
 // 2. 服务端计算总金额
-// 3. 组装订单与明细
+// 3. 组装订单与明细（含幂等键）
 // 4. 事务内扣库存 + 写订单 + 写明细
-func (s *orderService) CreateOrder(ctx context.Context, userID int64, req *CreateOrderReq) (string, error) {
+func (s *orderService) createOrderCore(ctx context.Context, userID int64, idempotencyKey string, req *CreateOrderReq) (string, error) {
 	var totalAmount int64
 	items := make([]OrderItem, 0, len(req.Items))
 	skuStocks := make([]SkuStockItem, 0, len(req.Items))
@@ -74,13 +140,14 @@ func (s *orderService) CreateOrder(ctx context.Context, userID int64, req *Creat
 	}
 
 	order := &Order{
-		OrderNo:       genOrderNo(),
-		UserID:        userID,
-		TotalAmount:   totalAmount,
-		Status:        OrderStatusPending,
-		ReceiverName:  req.ReceiverName,
-		ReceiverPhone: req.ReceiverPhone,
-		ReceiverAddr:  req.ReceiverAddr,
+		OrderNo:        genOrderNo(),
+		UserID:         userID,
+		TotalAmount:    totalAmount,
+		Status:         OrderStatusPending,
+		ReceiverName:   req.ReceiverName,
+		ReceiverPhone:  req.ReceiverPhone,
+		ReceiverAddr:   req.ReceiverAddr,
+		IdempotencyKey: idempotencyKey,
 	}
 
 	if err := s.repo.CreateOrderWithItems(ctx, order, items, skuStocks); err != nil {

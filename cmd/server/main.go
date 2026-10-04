@@ -18,6 +18,7 @@ import (
 	"github.com/zsh24198/ecommerce/shared/jwtx"
 	"github.com/zsh24198/ecommerce/shared/logger"
 	"github.com/zsh24198/ecommerce/shared/middleware"
+	"github.com/zsh24198/ecommerce/shared/redis"
 )
 
 func main() {
@@ -43,6 +44,12 @@ func main() {
 	})
 	if err != nil {
 		logger.Fatal(ctx, "connect db failed", zap.Error(err))
+	}
+
+	// 3.1 连接 Redis（用于幂等键等缓存场景）
+	rdb, err := redis.New(&cfg.Redis)
+	if err != nil {
+		logger.Fatal(ctx, "connect redis failed", zap.Error(err))
 	}
 
 	// 4. 装配：repo → jwt → service
@@ -82,7 +89,7 @@ func main() {
 	// 6.2 订单模块装配：repo → service（依赖 product.Service）→ handler
 	// 订单路由必须登录，挂载 JWT 中间件
 	oRepo := order.NewOrderRepository(db)
-	oSvc := order.NewOrderService(oRepo, pSvc)
+	oSvc := order.NewOrderService(oRepo, pSvc, rdb)
 	oHandler := order.NewHandler(oSvc)
 	orders := r.Group("/api/v1/orders", middleware.JWT(jwtMgr))
 	{

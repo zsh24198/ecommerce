@@ -15,6 +15,7 @@ const (
 	CodeUnknown      = 3002 // 未知错误
 
 	CodeRedisTimeout = 4001 // Redis 超时
+	CodeRedisError   = 4003 // Redis 操作失败
 	CodeKafkaProduce = 4002 // Kafka 投递失败
 
 	CodeStockNotEnough = 5001 // 库存不足
@@ -24,8 +25,9 @@ const (
 	CodeUserCreds      = 5005 // 手机号或密码错误
 	CodeUserBanned     = 5006 // 账号已被封禁
 
-	CodeProductNotFound = 5007 // 商品不存在
-	CodeSkuNotFound     = 5008 // SKU 不存在或不可售
+	CodeProductNotFound   = 5007 // 商品不存在
+	CodeSkuNotFound       = 5008 // SKU 不存在或不可售
+	CodeIdempotencyConflict = 5009 // 幂等冲突：请求处理中，请稍后重试
 
 	CodeRateLimited = 6001 // 触发限流
 	CodeDegraded    = 6002 // 服务降级

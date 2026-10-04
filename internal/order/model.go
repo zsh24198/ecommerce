@@ -27,6 +27,7 @@ type Order struct {
 	ReceiverName  string         `gorm:"column:receiver_name;type:varchar(64);not null;default:''"`
 	ReceiverPhone string         `gorm:"column:receiver_phone;type:varchar(20);not null;default:''"`
 	ReceiverAddr  string         `gorm:"column:receiver_addr;type:varchar(512);not null;default:''"`
+	IdempotencyKey string        `gorm:"column:idempotency_key;type:varchar(64);not null;default:''"`
 	CreatedAt     time.Time      `gorm:"column:created_at;type:datetime(3)"`
 	UpdatedAt     time.Time      `gorm:"column:updated_at;type:datetime(3)"`
 	DeletedAt     gorm.DeletedAt `gorm:"column:deleted_at;type:datetime(3);index:idx_orders_deleted_at"`
