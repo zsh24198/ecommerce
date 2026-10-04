@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
+	"github.com/zsh24198/ecommerce/internal/order"
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/internal/user"
 	"github.com/zsh24198/ecommerce/shared/config"
@@ -76,6 +77,16 @@ func main() {
 		products.GET("", pHandler.ListProducts)
 		products.GET("/:id", pHandler.GetProductDetail)
 		products.PUT("/:id/status", pHandler.UpdateSPUStatus)
+	}
+
+	// 6.2 订单模块装配：repo → service（依赖 product.Service）→ handler
+	// 订单路由必须登录，挂载 JWT 中间件
+	oRepo := order.NewOrderRepository(db)
+	oSvc := order.NewOrderService(oRepo, pSvc)
+	oHandler := order.NewHandler(oSvc)
+	orders := r.Group("/api/v1/orders", middleware.JWT(jwtMgr))
+	{
+		orders.POST("", oHandler.CreateOrder)
 	}
 
 	// 7. 启动

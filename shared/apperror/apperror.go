@@ -21,6 +21,8 @@ var (
 	ErrUserBanned      = &AppError{Code: CodeUserBanned, Msg: "账号已被封禁"}
 	ErrProductNotFound = &AppError{Code: CodeProductNotFound, Msg: "商品不存在"}
 	ErrSkuNotFound     = &AppError{Code: CodeSkuNotFound, Msg: "商品规格不存在"}
+	ErrStockNotEnough  = &AppError{Code: CodeStockNotEnough, Msg: "库存不足"}
+	ErrOrderIllegal    = &AppError{Code: CodeOrderIllegal, Msg: "订单状态非法"}
 	ErrTokenInvalid    = &AppError{Code: CodeTokenInvalid, Msg: "token 无效"}
 	ErrInternal        = &AppError{Code: CodeUnknown, Msg: "系统繁忙，请稍后再试"}
 )

@@ -74,6 +74,8 @@ type ProductService interface {
 	ListProducts(ctx context.Context, page, size int) ([]ProductListItem, int64, error)
 	// UpdateSPUStatus 上架/下架商品。
 	UpdateSPUStatus(ctx context.Context, spuID int64, status SPUStatus) error
+	// GetSKUByID 按 ID 查询单个 SKU，供 order 模块下单时获取真实单价与商品名快照。
+	GetSKUByID(ctx context.Context, skuID int64) (*SKU, error)
 }
 
 type productService struct {
@@ -193,6 +195,12 @@ func (s *productService) ListProducts(ctx context.Context, page, size int) ([]Pr
 		items = append(items, item)
 	}
 	return items, total, nil
+}
+
+// GetSKUByID 按 ID 查询 SKU。返回 model.SKU 给同域调用方使用；
+// 跨域调用方（如 order）只能读取字段，不得修改或持久化该对象。
+func (s *productService) GetSKUByID(ctx context.Context, skuID int64) (*SKU, error) {
+	return s.repo.FindSKUByID(ctx, skuID)
 }
 
 // UpdateSPUStatus 上架/下架。service 层做合法值校验，不让脏状态进 repo。

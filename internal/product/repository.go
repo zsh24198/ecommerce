@@ -23,6 +23,8 @@ type ProductRepository interface {
 	ListSKUsBySPUID(ctx context.Context, spuID int64) ([]SKU, error)
 	// UpdateSPUStatus 更新 SPU 上下架状态，记录不存在返回 apperror.ErrProductNotFound。
 	UpdateSPUStatus(ctx context.Context, id int64, status SPUStatus) error
+	// FindSKUByID 按 ID 查询单个 SKU，找不到返回 apperror.ErrSkuNotFound。
+	FindSKUByID(ctx context.Context, id int64) (*SKU, error)
 	// ListPriceRangeBySPUIDs 批量聚合各 SPU 的最低/最高价（一条 GROUP BY 消灭 N+1 查询）。
 	ListPriceRangeBySPUIDs(ctx context.Context, spuIDs []int64) (map[int64]PriceRange, error)
 }
@@ -120,6 +122,19 @@ func (r *productRepo) UpdateSPUStatus(ctx context.Context, id int64, status SPUS
 		return apperror.ErrProductNotFound
 	}
 	return nil
+}
+
+// FindSKUByID 按 ID 查询单个 SKU。
+func (r *productRepo) FindSKUByID(ctx context.Context, id int64) (*SKU, error) {
+	var sku SKU
+	err := r.db.WithContext(ctx).First(&sku, id).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, apperror.ErrSkuNotFound
+		}
+		return nil, apperror.Wrap(apperror.CodeUnknown, "查询SKU失败", err)
+	}
+	return &sku, nil
 }
 
 // ListPriceRangeBySPUIDs 批量聚合各 SPU 的最低/最高价。
