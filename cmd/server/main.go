@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -12,6 +16,7 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 
 	"github.com/zsh24198/ecommerce/internal/order"
+	"github.com/zsh24198/ecommerce/internal/outbox"
 	"github.com/zsh24198/ecommerce/internal/payment"
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/internal/user"
@@ -35,7 +40,9 @@ func main() {
 	}
 	defer logger.Sync()
 
-	ctx := context.Background()
+	// 根 ctx：进程收到 SIGINT/SIGTERM 时自动 cancel，Relay 等后台任务随之优雅退出
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	// 3. 连接数据库
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
@@ -109,10 +116,27 @@ func main() {
 		payments.POST("/callback", payHandler.Callback)
 	}
 
-	// 7. 启动
+	// 6.4 Outbox 模块装配：repo → Relay（任务 15 用 LogPublisher，任务 16 换 Kafka）→ 后台 goroutine
+	outboxRepo := outbox.NewOutboxRepository(db)
+	relay := outbox.NewOutboxRelay(outboxRepo, outbox.NewLogPublisher())
+	go relay.Run(ctx)
+
+	// 7. 启动 HTTP 服务（http.Server + Shutdown 支持优雅关停）
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	srv := &http.Server{Addr: addr, Handler: r}
 	logger.Info(ctx, "server starting", zap.String("addr", addr))
-	if err := r.Run(addr); err != nil {
-		logger.Fatal(ctx, "server run failed", zap.Error(err))
+	go func() {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Fatal(ctx, "server run failed", zap.Error(err))
+		}
+	}()
+
+	// 8. 等待退出信号 → 关闭 HTTP（停止接新请求，最多等 10s 让在途请求完成）
+	<-ctx.Done()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		logger.Error(ctx, "server shutdown failed", zap.Error(err))
 	}
+	logger.Info(ctx, "server exited gracefully")
 }

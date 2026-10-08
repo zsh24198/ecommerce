@@ -2,6 +2,7 @@ package payment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -20,9 +21,10 @@ type PaymentRepository interface {
 	// GetByPaymentNo 按支付流水号查询，未找到返回 nil。
 	GetByPaymentNo(ctx context.Context, paymentNo string) (*Payment, error)
 
-	// MarkSuccess 事务内原子完成两件事：
+	// MarkSuccess 事务内原子完成三件事：
 	//   1. 更新支付单为成功（写入 transaction_id、paid_at、callback_raw）
 	//   2. 更新订单状态：待支付(1) → 已支付(2)，带状态机条件 WHERE status=1
+	//   3. 写入 payment.paid outbox 事件（与业务同事务，仅完整成功路径走到这里）
 	// 若订单已非待支付状态（RowsAffected=0），返回 apperror.ErrOrderNotPending。
 	// 利用 transaction_id 唯一索引做回调幂等兜底：重复回调命中 1062 → 返回 nil（已处理）。
 	MarkSuccess(ctx context.Context, paymentNo, transactionID string, paidAt time.Time, callbackRaw string) error
@@ -108,8 +110,44 @@ func (r *paymentRepo) MarkSuccess(ctx context.Context, paymentNo, transactionID 
 			return apperror.ErrOrderNotPending
 		}
 
+		// 3. 同事务写 outbox 事件：订单状态也更新成功后才走到这里（幂等路径已提前返回）。
+		// 查回支付单构建 payload（同事务内读，数据一致），消费方拿到事件即可用，无需反查业务库。
+		paid, err := r.getByPaymentNoTx(tx, paymentNo)
+		if err != nil {
+			return err
+		}
+		payload, err := json.Marshal(paymentPaidEventPayload{
+			PaymentNo:     paid.PaymentNo,
+			OrderNo:       paid.OrderNo,
+			UserID:        paid.UserID,
+			Amount:        paid.Amount,
+			Channel:       paid.Channel,
+			TransactionID: paid.TransactionID,
+			PaidAt:        paidAt.Format(time.RFC3339Nano),
+		})
+		if err != nil {
+			return apperror.Wrap(apperror.CodeUnknown, "序列化支付事件失败", err)
+		}
+		if err := tx.Exec(
+			"INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload) VALUES (?, ?, ?, ?)",
+			"payment", paymentNo, "payment.paid", string(payload),
+		).Error; err != nil {
+			return apperror.Wrap(apperror.CodeUnknown, "写入 outbox 事件失败", err)
+		}
+
 		return nil
 	})
+}
+
+// paymentPaidEventPayload payment.paid 事件消息体：支付完成的事实快照。
+type paymentPaidEventPayload struct {
+	PaymentNo     string         `json:"payment_no"`
+	OrderNo       string         `json:"order_no"`
+	UserID        int64          `json:"user_id"`
+	Amount        int64          `json:"amount"`
+	Channel       PaymentChannel `json:"channel"`
+	TransactionID string         `json:"transaction_id"`
+	PaidAt        string         `json:"paid_at"`
 }
 
 // getByPaymentNoTx 事务内查询支付单。

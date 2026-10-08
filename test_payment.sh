@@ -35,7 +35,7 @@ if [ -z "$PAYMENT_NO" ] || [ -z "$ORDER_NO" ]; then
 fi
 
 echo "=== 6. 计算签名 ==="
-AMOUNT="9900"; CHANNEL="1"; TRANSACTION_ID="4200001234202610040000000001"
+AMOUNT="9900"; CHANNEL="1"; TRANSACTION_ID="420000123420261004$(date +%s)"
 STATUS="success"; PAID_AT="2026-10-04 12:00:01"; SECRET="dev-payment-sign-secret-change-me"
 SIGN=$(printf 'amount=%s&channel=%s&order_no=%s&paid_at=%s&payment_no=%s&status=%s&transaction_id=%s&key=%s' "$AMOUNT" "$CHANNEL" "$ORDER_NO" "$PAID_AT" "$PAYMENT_NO" "$STATUS" "$TRANSACTION_ID" "$SECRET" | openssl dgst -sha256 -hmac "$SECRET" | awk '{print toupper($2)}')
 echo "SIGN: $SIGN"
@@ -53,4 +53,5 @@ curl -s -X POST $BASE/api/v1/payments/callback -H "Content-Type: application/jso
 echo
 
 echo "=== 10. MySQL 容器名 ==="
+
 docker ps --format '{{.Names}}' | grep -i mysql

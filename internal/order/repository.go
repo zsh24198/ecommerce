@@ -2,6 +2,7 @@ package order
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -13,7 +14,7 @@ import (
 
 // OrderRepository 订单数据访问接口。
 type OrderRepository interface {
-	// CreateOrderWithItems 在事务内完成：扣库存 → 写订单主表 → 写订单明细。
+	// CreateOrderWithItems 在事务内完成：写订单主表 → 扣库存 → 写订单明细 → 写 outbox 事件。
 	// skuItems 是已校验过的 SKU 列表（含真实单价与商品名快照），任一步失败整体回滚。
 	CreateOrderWithItems(ctx context.Context, order *Order, items []OrderItem, skuItems []SkuStockItem) error
 
@@ -78,8 +79,49 @@ func (r *orderRepo) CreateOrderWithItems(ctx context.Context, order *Order, item
 			return apperror.Wrap(apperror.CodeUnknown, "创建订单明细失败", err)
 		}
 
+		// 4. 同事务写 outbox 事件：订单创建成功则事件必然落库，失败则一起回滚。
+		// 仅真正新建时写（幂等命中路径已在上方提前返回，避免产生重复事件）。
+		eventItems := make([]orderItemEventPayload, 0, len(items))
+		for _, it := range items {
+			eventItems = append(eventItems, orderItemEventPayload{
+				SKUID: it.SKUID, SKUName: it.SKUName,
+				PriceCents: it.PriceCents, Quantity: it.Quantity, Subtotal: it.Subtotal,
+			})
+		}
+		payload, err := json.Marshal(orderCreatedEventPayload{
+			OrderNo:     order.OrderNo,
+			UserID:      order.UserID,
+			TotalAmount: order.TotalAmount,
+			Items:       eventItems,
+		})
+		if err != nil {
+			return apperror.Wrap(apperror.CodeUnknown, "序列化订单事件失败", err)
+		}
+		if err := tx.Exec(
+			"INSERT INTO outbox_events (aggregate_type, aggregate_id, event_type, payload) VALUES (?, ?, ?, ?)",
+			"order", order.OrderNo, "order.created", string(payload),
+		).Error; err != nil {
+			return apperror.Wrap(apperror.CodeUnknown, "写入 outbox 事件失败", err)
+		}
+
 		return nil
 	})
+}
+
+// orderCreatedEventPayload order.created 事件消息体：业务字段快照，消费方无需反查业务库。
+type orderCreatedEventPayload struct {
+	OrderNo     string                  `json:"order_no"`
+	UserID      int64                   `json:"user_id"`
+	TotalAmount int64                   `json:"total_amount"`
+	Items       []orderItemEventPayload `json:"items"`
+}
+
+type orderItemEventPayload struct {
+	SKUID      int64  `json:"sku_id"`
+	SKUName    string `json:"sku_name"`
+	PriceCents int64  `json:"price_cents"`
+	Quantity   int    `json:"quantity"`
+	Subtotal   int64  `json:"subtotal"`
 }
 
 // GetOrderByOrderNo 按订单号查询订单，未找到返回 nil + nil。
