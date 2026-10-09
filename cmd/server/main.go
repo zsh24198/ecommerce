@@ -23,6 +23,7 @@ import (
 	"github.com/zsh24198/ecommerce/shared/config"
 	"github.com/zsh24198/ecommerce/shared/jwtx"
 	"github.com/zsh24198/ecommerce/shared/kafka"
+	"github.com/zsh24198/ecommerce/shared/lock"
 	"github.com/zsh24198/ecommerce/shared/logger"
 	"github.com/zsh24198/ecommerce/shared/middleware"
 	"github.com/zsh24198/ecommerce/shared/redis"
@@ -97,8 +98,10 @@ func main() {
 
 	// 6.2 订单模块装配：repo → service（依赖 product.Service）→ handler
 	// 订单路由必须登录，挂载 JWT 中间件
+	// lock.Manager 与订单服务共用同一个 Redis 连接池；ttl=0 用默认 30s
+	locker := lock.NewManager(rdb.Client, 0)
 	oRepo := order.NewOrderRepository(db)
-	oSvc := order.NewOrderService(oRepo, pSvc, rdb)
+	oSvc := order.NewOrderService(oRepo, pSvc, rdb, locker)
 	oHandler := order.NewHandler(oSvc)
 	orders := r.Group("/api/v1/orders", middleware.JWT(jwtMgr))
 	{

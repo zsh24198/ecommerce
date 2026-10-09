@@ -3,10 +3,12 @@ package order
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/shared/apperror"
+	"github.com/zsh24198/ecommerce/shared/lock"
 	redisclient "github.com/zsh24198/ecommerce/shared/redis"
 )
 
@@ -48,10 +50,11 @@ type orderService struct {
 	repo    OrderRepository
 	product product.ProductService // 跨域调用：通过 product.Service 接口，不碰 product.Repository
 	redis   *redisclient.Client
+	locker  *lock.Manager // 分布式锁：按 SKU 粒度互斥，防并发超卖
 }
 
-func NewOrderService(repo OrderRepository, productSvc product.ProductService, rdb *redisclient.Client) OrderService {
-	return &orderService{repo: repo, product: productSvc, redis: rdb}
+func NewOrderService(repo OrderRepository, productSvc product.ProductService, rdb *redisclient.Client, locker *lock.Manager) OrderService {
+	return &orderService{repo: repo, product: productSvc, redis: rdb, locker: locker}
 }
 
 // 幂等键在 Redis 中的占位符，表示首次请求正在处理中。
@@ -150,6 +153,18 @@ func (s *orderService) createOrderCore(ctx context.Context, userID int64, idempo
 		skuStocks = append(skuStocks, SkuStockItem{SKUID: sku.ID, Quantity: it.Quantity})
 	}
 
+	// 多把锁按 SKUID 升序获取，打破"循环等待"条件防死锁；
+	// 临界区只包住"扣库存+写订单"事务，查价/算价在锁外（正确性由原子 SQL 兜底）
+	mus, err := s.acquireStockLocks(ctx, skuStocks)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		for _, m := range mus {
+			m.Unlock(ctx) // 释放无等待，无需按序
+		}
+	}()
+
 	order := &Order{
 		OrderNo:        genOrderNo(),
 		UserID:         userID,
@@ -165,6 +180,24 @@ func (s *orderService) createOrderCore(ctx context.Context, userID int64, idempo
 		return "", err
 	}
 	return order.OrderNo, nil
+}
+
+// acquireStockLocks 按升序依次抢各 SKU 的库存锁；任何一把失败，
+// 释放已持有的全部（全有或全无），不留"持有并等待"的残局。
+func (s *orderService) acquireStockLocks(ctx context.Context, items []SkuStockItem) ([]*lock.Mutex, error) {
+	sort.Slice(items, func(i, j int) bool { return items[i].SKUID < items[j].SKUID })
+	mus := make([]*lock.Mutex, 0, len(items))
+	for _, it := range items {
+		mu, err := s.locker.Acquire(ctx, fmt.Sprintf("lock:stock:%d", it.SKUID))
+		if err != nil {
+			for _, held := range mus {
+				held.Unlock(ctx)
+			}
+			return nil, err
+		}
+		mus = append(mus, mu)
+	}
+	return mus, nil
 }
 
 // GetOrderInfoByNo 按订单号查询订单基本信息。

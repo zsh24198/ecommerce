@@ -33,6 +33,7 @@ const (
 	CodePaymentAmountErr   = 5011 // 支付金额不匹配
 	CodePaymentSignInvalid = 5012 // 支付回调签名无效
 	CodeOrderNotPending    = 5013 // 订单非待支付状态，无法支付
+	CodeLockConflict       = 5014 // 抢锁失败：当前请求过于繁忙，请稍后重试
 
 	CodeRateLimited = 6001 // 触发限流
 	CodeDegraded    = 6002 // 服务降级
