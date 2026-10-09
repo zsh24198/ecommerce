@@ -33,3 +33,18 @@ jwt:
   secret: dev-only-secret-change-me
   access_ttl: 2h
   refresh_ttl: 168h
+
+payment:
+  sign_secret: dev-payment-sign-secret-change-me
+
+kafka:
+  brokers:
+    - 127.0.0.1:9092
+  producer:
+    required_acks: -1      # all ISR 确认，消息不丢失
+    retry_max: 3
+    compression: snappy
+  consumer:
+    group_id: ecommerce-consumer
+    auto_offset_reset: earliest
+    enable_auto_commit: false  # 手动提交，保证消费幂等

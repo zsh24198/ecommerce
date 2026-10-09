@@ -22,6 +22,7 @@ import (
 	"github.com/zsh24198/ecommerce/internal/user"
 	"github.com/zsh24198/ecommerce/shared/config"
 	"github.com/zsh24198/ecommerce/shared/jwtx"
+	"github.com/zsh24198/ecommerce/shared/kafka"
 	"github.com/zsh24198/ecommerce/shared/logger"
 	"github.com/zsh24198/ecommerce/shared/middleware"
 	"github.com/zsh24198/ecommerce/shared/redis"
@@ -116,10 +117,25 @@ func main() {
 		payments.POST("/callback", payHandler.Callback)
 	}
 
-	// 6.4 Outbox 模块装配：repo → Relay（任务 15 用 LogPublisher，任务 16 换 Kafka）→ 后台 goroutine
+	// 6.4 Outbox 模块装配：repo → Relay（KafkaPublisher 投递到 Kafka）→ 后台 goroutine
+	kafkaProducer, err := kafka.NewProducer(&cfg.Kafka)
+	if err != nil {
+		logger.Fatal(ctx, "connect kafka failed", zap.Error(err))
+	}
+	defer kafkaProducer.Close()
+
 	outboxRepo := outbox.NewOutboxRepository(db)
-	relay := outbox.NewOutboxRelay(outboxRepo, outbox.NewLogPublisher())
+	relay := outbox.NewOutboxRelay(outboxRepo, outbox.NewKafkaPublisher(kafkaProducer, "ecommerce."))
 	go relay.Run(ctx)
+
+	// 6.5 订单事件消费者：Kafka 消费组 + event_id 去重（后台 goroutine）
+	eventHandler := order.NewEventHandler(rdb)
+	consumerGroup, err := kafka.NewConsumerGroup(&cfg.Kafka, []string{"ecommerce.order"}, eventHandler.Handle)
+	if err != nil {
+		logger.Fatal(ctx, "start kafka consumer failed", zap.Error(err))
+	}
+	go consumerGroup.Run(ctx)
+	defer consumerGroup.Close()
 
 	// 7. 启动 HTTP 服务（http.Server + Shutdown 支持优雅关停）
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
