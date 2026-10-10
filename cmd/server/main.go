@@ -143,7 +143,9 @@ func main() {
 
 	// 6.6 秒杀模块装配：repo → service（依赖 product.Service）→ handler
 	sRepo := seckill.NewSeckillRepository(db)
-	sSvc := seckill.NewSeckillService(sRepo, pSvc)
+	sCache := seckill.NewActivityCache(sRepo)
+	sStock := seckill.NewStockStore(rdb)
+	sSvc := seckill.NewSeckillService(sRepo, pSvc, sCache, sStock, kafkaProducer)
 	sHandler := seckill.NewHandler(sSvc)
 	seckillGrp := r.Group("/api/v1/seckill")
 	{
@@ -152,6 +154,10 @@ func main() {
 		seckillGrp.GET("/ongoing", sHandler.ListOngoingActivities)
 		seckillGrp.GET("/activities/:id", sHandler.GetActivity)
 		seckillGrp.PUT("/activities/:id/enabled", sHandler.UpdateActivityEnabled)
+		seckillAuth := seckillGrp.Group("", middleware.JWT(jwtMgr))
+		{
+			seckillAuth.POST("/activities/:id/buy", sHandler.Buy)
+		}
 	}
 
 	// 7. 启动 HTTP 服务（http.Server + Shutdown 支持优雅关停）

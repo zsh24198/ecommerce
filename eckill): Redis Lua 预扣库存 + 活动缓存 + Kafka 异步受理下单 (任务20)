@@ -1,0 +1,8 @@
+ cmd/server/main.go          |   8 [32m++++[m[31m-[m
+ go.mod                      |   2 [32m+[m[31m-[m
+ internal/seckill/cache.go   |  57 [32m++++++++++++++++++++++++++++++[m
+ internal/seckill/handler.go |  21 [32m+++++++++++[m
+ internal/seckill/service.go | 109 [32m+++++++++++++++++++++++++++++++++++++++++++++++++++++++[m[31m---[m
+ internal/seckill/stock.go   |  85 [32m+++++++++++++++++++++++++++++++++++++++++++++[m
+ shared/apperror/codes.go    |   3 [32m++[m
+ 7 files changed, 278 insertions(+), 7 deletions(-)

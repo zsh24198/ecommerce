@@ -103,3 +103,24 @@ func (h *Handler) UpdateActivityEnabled(c *gin.Context) {
 	}
 	middleware.OK(c, nil)
 }
+
+// Buy POST /api/v1/seckill/activities/:id/buy
+// 异步受理语义：库存预扣 + 消息投递成功即返回，订单由消费端异步创建（任务 21）。
+func (h *Handler) Buy(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		middleware.Fail(c, apperror.New(apperror.CodeParamInvalid, "活动ID非法"))
+		return
+	}
+	var req DoSeckillReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		middleware.Fail(c, apperror.New(apperror.CodeParamInvalid, err.Error()))
+		return
+	}
+	userID := middleware.CurrentUserID(c)
+	if err := h.svc.DoSeckill(c.Request.Context(), userID, id, &req); err != nil {
+		middleware.Fail(c, err)
+		return
+	}
+	middleware.OK(c, gin.H{"status": "accepted"})
+}

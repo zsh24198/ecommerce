@@ -38,6 +38,9 @@ const (
 	CodeSeckillActivityNotFound = 5015 // 秒杀活动不存在
 	CodeSeckillSKUBusy          = 5016 // SKU 已被其他启用中活动占用（时间重叠）
 	CodeSeckillPriceInvalid     = 5017 // 秒杀价非法（须低于 SKU 现售价）
+	CodeSeckillSoldOut          = 5018 // 秒杀商品已售罄
+	CodeSeckillStockNotReady    = 5019 // 秒杀库存未预热（系统异常，请稍后再试）
+	CodeSeckillNotOngoing       = 5020 // 秒杀活动未开始或已结束
 
 	CodeRateLimited = 6001 // 触发限流
 	CodeDegraded    = 6002 // 服务降级

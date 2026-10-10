@@ -2,11 +2,18 @@ package seckill
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
+
+	"github.com/google/uuid"
+	"go.uber.org/zap"
 
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/shared/apperror"
+	"github.com/zsh24198/ecommerce/shared/kafka"
+	"github.com/zsh24198/ecommerce/shared/logger"
 )
 
 // ActivityStatus 活动状态：由 service 动态推导（先判开关，再判时间窗口），不落库。
@@ -80,18 +87,23 @@ type SeckillService interface {
 	ListOngoingActivities(ctx context.Context) ([]ActivityListItem, error)
 	// UpdateActivityEnabled 运营开关：一键禁用/启用活动。
 	UpdateActivityEnabled(ctx context.Context, id int64, enabled bool) error
+	// DoSeckill 秒杀下单：内存校验 + Redis 预扣 + Kafka 异步建单。
+	DoSeckill(ctx context.Context, userID, activityID int64, req *DoSeckillReq) error
 }
 
 const activityTimeLayout = "2006-01-02 15:04:05"
 
 type seckillService struct {
-	repo    SeckillRepository
-	product product.ProductService
+	repo     SeckillRepository
+	product  product.ProductService
+	cache    *ActivityCache
+	stock    *StockStore
+	producer *kafka.Producer
 }
 
 // NewSeckillService 构造函数。跨域读 SKU 走 product.Service 接口，不碰 product.Repository。
-func NewSeckillService(repo SeckillRepository, productSvc product.ProductService) SeckillService {
-	return &seckillService{repo: repo, product: productSvc}
+func NewSeckillService(repo SeckillRepository, productSvc product.ProductService, cache *ActivityCache, stock *StockStore, producer *kafka.Producer) SeckillService {
+	return &seckillService{repo: repo, product: productSvc, cache: cache, stock: stock, producer: producer}
 }
 
 // CreateActivity 创建活动：时间校验 → 逐 SKU 校验+快照 → 重叠校验 → 事务落库。
@@ -216,7 +228,94 @@ func (s *seckillService) ListOngoingActivities(ctx context.Context) ([]ActivityL
 
 // UpdateActivityEnabled 运营开关：秒杀的紧急刹车。
 func (s *seckillService) UpdateActivityEnabled(ctx context.Context, id int64, enabled bool) error {
-	return s.repo.UpdateActivityEnabled(ctx, id, enabled)
+	if err := s.repo.UpdateActivityEnabled(ctx, id, enabled); err != nil {
+		return err
+	}
+	s.cache.Invalidate(id)
+	if enabled {
+		_, items, err := s.cache.Get(ctx, id)
+		if err != nil {
+			return err
+		}
+		for i := range items {
+			if err := s.stock.Warmup(ctx, items[i].ID, items[i].Stock); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// DoSeckillReq 秒杀下单请求。
+type DoSeckillReq struct {
+	ItemID   int64 `json:"item_id"  binding:"required,gt=0"`
+	Quantity int   `json:"quantity" binding:"required,min=1,max=100"`
+}
+
+// KafkaTopicSeckillOrder 秒杀下单事件 topic，消费端（任务 21）订阅。
+const KafkaTopicSeckillOrder = "seckill-order"
+
+// SeckillOrderEvent 秒杀下单事件：快照随消息走，消费端建单无需回查秒杀表。
+type SeckillOrderEvent struct {
+	EventID           string `json:"event_id"`
+	UserID            int64  `json:"user_id"`
+	ActivityID        int64  `json:"activity_id"`
+	ItemID            int64  `json:"item_id"`
+	SKUID             int64  `json:"sku_id"`
+	SKUName           string `json:"sku_name"`
+	Quantity          int    `json:"quantity"`
+	SeckillPriceCents int64  `json:"seckill_price_cents"`
+}
+
+// DoSeckill 秒杀下单：内存校验 → Redis Lua 预扣 → 同步发 Kafka 异步建单。
+// 预扣成功即受理成功；发送失败立即回补（宁可少卖，绝不超卖）。
+func (s *seckillService) DoSeckill(ctx context.Context, userID, activityID int64, req *DoSeckillReq) error {
+	act, items, err := s.cache.Get(ctx, activityID)
+	if err != nil {
+		return err
+	}
+	if !act.Enabled || statusOf(act, time.Now()) != ActivityStatusOngoing {
+		return apperror.New(apperror.CodeSeckillNotOngoing, "活动未开始或已结束")
+	}
+	var item *SeckillItem
+	for i := range items {
+		if items[i].ID == req.ItemID {
+			item = &items[i]
+			break
+		}
+	}
+	if item == nil {
+		return apperror.New(apperror.CodeParamInvalid, "商品不在该秒杀活动中")
+	}
+	if req.Quantity > item.LimitPerUser {
+		return apperror.New(apperror.CodeParamInvalid, "超过单用户限购数量")
+	}
+	if err := s.stock.Deduct(ctx, req.ItemID, req.Quantity); err != nil {
+		return err
+	}
+	evt := SeckillOrderEvent{
+		EventID:           uuid.NewString(),
+		UserID:            userID,
+		ActivityID:        activityID,
+		ItemID:            item.ID,
+		SKUID:             item.SKUID,
+		SKUName:           item.SKUNameSnapshot,
+		Quantity:          req.Quantity,
+		SeckillPriceCents: item.SeckillPriceCents,
+	}
+	payload, err := json.Marshal(evt)
+	if err != nil {
+		_, _ = s.stock.Restore(ctx, item.ID, req.Quantity)
+		return apperror.Wrap(apperror.CodeUnknown, "marshal seckill order event", err)
+	}
+	key := strconv.FormatInt(userID, 10)
+	if _, _, err := s.producer.SendMessage(KafkaTopicSeckillOrder, key, payload); err != nil {
+		if ok, rerr := s.stock.Restore(ctx, item.ID, req.Quantity); rerr != nil || !ok {
+			logger.Error(ctx, "seckill stock restore failed", zap.Int64("item_id", item.ID), zap.Error(rerr))
+		}
+		return apperror.Wrap(apperror.CodeKafkaProduce, "抢购请求受理失败，请稍后重试", err)
+	}
+	return nil
 }
 
 // buildDetail 组装详情 DTO，状态推导时间统一取一次 now，保证同一请求内状态一致。
