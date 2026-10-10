@@ -28,6 +28,11 @@ var (
 	ErrPaymentSign     = &AppError{Code: CodePaymentSignInvalid, Msg: "支付回调签名无效"}
 	ErrOrderNotPending = &AppError{Code: CodeOrderNotPending, Msg: "订单非待支付状态"}
 	ErrLockConflict   = &AppError{Code: CodeLockConflict, Msg: "请求过于繁忙，请稍后重试"}
+
+	ErrSeckillActivityNotFound = &AppError{Code: CodeSeckillActivityNotFound, Msg: "秒杀活动不存在"}
+	ErrSeckillSKUBusy          = &AppError{Code: CodeSeckillSKUBusy, Msg: "商品已被其他秒杀活动占用"}
+	ErrSeckillPriceInvalid     = &AppError{Code: CodeSeckillPriceInvalid, Msg: "秒杀价必须低于商品现售价"}
+
 	ErrTokenInvalid    = &AppError{Code: CodeTokenInvalid, Msg: "token 无效"}
 	ErrForbidden       = &AppError{Code: CodeForbidden, Msg: "权限不足"}
 	ErrInternal        = &AppError{Code: CodeUnknown, Msg: "系统繁忙，请稍后再试"}

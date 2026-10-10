@@ -16,8 +16,7 @@ import (
 // 注意：不传金额，金额由服务端根据 SKU 真实单价计算，客户端不可信。
 type CreateOrderReq struct {
 	Items         []OrderItemReq `json:"items"         binding:"required,min=1,max=100,dive"`
-	ReceiverName  string         `json:"receiver_name" binding:"required,ma
-	3.x=64"`
+	ReceiverName  string         `json:"receiver_name" binding:"required,max=64"`
 	ReceiverPhone string         `json:"receiver_phone" binding:"required,len=11"`
 	ReceiverAddr  string         `json:"receiver_addr"  binding:"required,max=512"`
 }

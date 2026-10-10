@@ -19,6 +19,7 @@ import (
 	"github.com/zsh24198/ecommerce/internal/outbox"
 	"github.com/zsh24198/ecommerce/internal/payment"
 	"github.com/zsh24198/ecommerce/internal/product"
+	"github.com/zsh24198/ecommerce/internal/seckill"
 	"github.com/zsh24198/ecommerce/internal/user"
 	"github.com/zsh24198/ecommerce/shared/config"
 	"github.com/zsh24198/ecommerce/shared/jwtx"
@@ -139,6 +140,19 @@ func main() {
 	}
 	go consumerGroup.Run(ctx)
 	defer consumerGroup.Close()
+
+	// 6.6 秒杀模块装配：repo → service（依赖 product.Service）→ handler
+	sRepo := seckill.NewSeckillRepository(db)
+	sSvc := seckill.NewSeckillService(sRepo, pSvc)
+	sHandler := seckill.NewHandler(sSvc)
+	seckillGrp := r.Group("/api/v1/seckill")
+	{
+		seckillGrp.POST("/activities", sHandler.CreateActivity)
+		seckillGrp.GET("/activities", sHandler.ListActivities)
+		seckillGrp.GET("/ongoing", sHandler.ListOngoingActivities)
+		seckillGrp.GET("/activities/:id", sHandler.GetActivity)
+		seckillGrp.PUT("/activities/:id/enabled", sHandler.UpdateActivityEnabled)
+	}
 
 	// 7. 启动 HTTP 服务（http.Server + Shutdown 支持优雅关停）
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

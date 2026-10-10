@@ -35,6 +35,10 @@ const (
 	CodeOrderNotPending    = 5013 // 订单非待支付状态，无法支付
 	CodeLockConflict       = 5014 // 抢锁失败：当前请求过于繁忙，请稍后重试
 
+	CodeSeckillActivityNotFound = 5015 // 秒杀活动不存在
+	CodeSeckillSKUBusy          = 5016 // SKU 已被其他启用中活动占用（时间重叠）
+	CodeSeckillPriceInvalid     = 5017 // 秒杀价非法（须低于 SKU 现售价）
+
 	CodeRateLimited = 6001 // 触发限流
 	CodeDegraded    = 6002 // 服务降级
 )
