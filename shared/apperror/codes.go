@@ -41,6 +41,7 @@ const (
 	CodeSeckillSoldOut          = 5018 // 秒杀商品已售罄
 	CodeSeckillStockNotReady    = 5019 // 秒杀库存未预热（系统异常，请稍后再试）
 	CodeSeckillNotOngoing       = 5020 // 秒杀活动未开始或已结束
+	CodeSeckillOrderNotCreated  = 5021 // 秒杀订单未创建（异步处理中，前端继续轮询）
 
 	CodeRateLimited = 6001 // 触发限流
 	CodeDegraded    = 6002 // 服务降级

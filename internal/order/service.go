@@ -43,6 +43,18 @@ type OrderService interface {
 
 	// GetOrderInfoByNo 按订单号查询订单基本信息，供 payment 模块创建支付单时校验订单归属与金额。
 	GetOrderInfoByNo(ctx context.Context, orderNo string) (*OrderInfo, error)
+
+	// CreateSeckillOrder 秒杀异步建单：信消息快照，不查价、不加锁、不扣 MySQL 库存。
+	// 秒杀库存已在 Redis 预扣，这里只落订单，状态置为 PendingInfo 等待用户补全收货信息。
+	CreateSeckillOrder(ctx context.Context, msg *SeckillOrderMsg) (string, error)
+
+	// GetSeckillOrderByEventID 按 event_id 查询秒杀订单是否已创建。
+	// 未找到返回 CodeSeckillOrderNotCreated（前端继续轮询），找到返回订单号与状态。
+	GetSeckillOrderByEventID(ctx context.Context, userID int64, eventID string) (orderNo string, status OrderStatus, err error)
+
+	// FillReceiverInfo 秒杀单补填收货信息：仅 PendingInfo → Pending 单向推进。
+	// 补全后订单进入待支付状态，可发起支付。
+	FillReceiverInfo(ctx context.Context, userID int64, orderNo, name, phone, addr string) error
 }
 
 type orderService struct {
@@ -116,6 +128,93 @@ func (s *orderService) pollIdempotencyResult(ctx context.Context, rKey string) (
 		time.Sleep(idempotencyPollInterval)
 	}
 	return "", apperror.New(apperror.CodeIdempotencyConflict, "请求处理中，请稍后重试")
+}
+
+// CreateSeckillOrder 秒杀异步建单：与 createOrderCore 的三个区别——
+//  1. 不查 product 现价，金额直接用消息里的 SeckillPriceCents 快照
+//  2. 不加 Redsync 锁（没有 MySQL 扣库存这个临界区，锁无意义）
+//  3. skuStocks 传 nil，不扣 MySQL 普通库存（秒杀库存与普通库存完全独立）
+//
+// event_id 存入 idempotency_key 字段，配合 (user_id, idempotency_key) 唯一索引
+// 做消费端幂等兜底：重复消息重投时撞唯一键，CreateOrderWithItems 会回填已有订单号。
+func (s *orderService) CreateSeckillOrder(ctx context.Context, msg *SeckillOrderMsg) (string, error) {
+	if msg.Quantity <= 0 {
+		return "", apperror.New(apperror.CodeParamInvalid, "秒杀数量非法")
+	}
+	subtotal := msg.SeckillPriceCents * int64(msg.Quantity)
+
+	order := &Order{
+		OrderNo:        genOrderNo(),
+		UserID:         msg.UserID,
+		TotalAmount:    subtotal,
+		Status:         OrderStatusPendingInfo,
+		ReceiverName:   "", // 秒杀单先建单，收货信息由用户在"待补全"阶段填写
+		ReceiverPhone:  "",
+		ReceiverAddr:   "",
+		IdempotencyKey: msg.EventID, // 消费端幂等键落库，配合唯一索引兜底
+	}
+	items := []OrderItem{{
+		SKUID:      msg.SKUID,
+		SKUName:    msg.SKUName,           // 名称快照：直接用消息带的
+		PriceCents: msg.SeckillPriceCents, // 单价快照：秒杀价
+		Quantity:   msg.Quantity,
+		Subtotal:   subtotal,
+	}}
+	// skuStocks 传 nil：秒杀库存在 Redis 已扣，普通库存分文未动
+	if err := s.repo.CreateOrderWithItems(ctx, order, items, nil); err != nil {
+		return "", err
+	}
+	return order.OrderNo, nil
+}
+
+// GetSeckillOrderByEventID 按 event_id 查询秒杀订单是否已创建。
+// 先查 Redis 缓存（消费者建单成功后写入），命中直接返回，避免打 DB；
+// 未命中回源 DB，查到则回填缓存，未查到返回 CodeSeckillOrderNotCreated（前端继续轮询）。
+func (s *orderService) GetSeckillOrderByEventID(ctx context.Context, userID int64, eventID string) (string, OrderStatus, error) {
+	cacheKey := fmt.Sprintf(seckillOrderKeyFmt, eventID)
+	if orderNo, err := s.redis.Get(ctx, cacheKey).Result(); err == nil && orderNo != "" {
+		// 缓存命中：再查一次 DB 拿最新状态（状态可能已推进，如补填收货信息后 PendingInfo → Pending）
+		o, dErr := s.repo.GetOrderByOrderNo(ctx, orderNo)
+		if dErr != nil {
+			return "", 0, dErr
+		}
+		if o != nil && o.UserID == userID {
+			return o.OrderNo, o.Status, nil
+		}
+	}
+
+	// 缓存未命中或校验失败：回源 DB 按幂等键查
+o, err := s.repo.GetOrderByIdempotencyKey(ctx, userID, eventID)
+	if err != nil {
+		return "", 0, err
+	}
+	if o == nil {
+		return "", 0, apperror.New(apperror.CodeSeckillOrderNotCreated, "秒杀订单处理中，请稍后再试")
+	}
+	// 回填缓存（消费者写缓存失败时此处兜底）
+	_ = s.redis.Set(ctx, cacheKey, o.OrderNo, seckillOrderTTL).Err()
+	return o.OrderNo, o.Status, nil
+}
+
+// FillReceiverInfo 秒杀单补填收货信息并推进状态。
+// 先校验订单归属，再用带状态条件的 UPDATE 原子推进 PendingInfo → Pending。
+func (s *orderService) FillReceiverInfo(ctx context.Context, userID int64, orderNo, name, phone, addr string) error {
+	o, err := s.repo.GetOrderByOrderNo(ctx, orderNo)
+	if err != nil {
+		return err
+	}
+	if o == nil || o.UserID != userID {
+		return apperror.ErrOrderIllegal
+	}
+	affected, err := s.repo.UpdateReceiverInfo(ctx, orderNo, name, phone, addr)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		// 状态不是 PendingInfo：可能已补全、已支付、已取消等
+		return apperror.New(apperror.CodeOrderIllegal, "订单当前状态不允许补填收货信息")
+	}
+	return nil
 }
 
 // createOrderCore 下单核心业务（不含幂等逻辑）：

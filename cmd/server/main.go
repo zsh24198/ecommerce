@@ -107,6 +107,8 @@ func main() {
 	orders := r.Group("/api/v1/orders", middleware.JWT(jwtMgr))
 	{
 		orders.POST("", oHandler.CreateOrder)
+		orders.GET("/seckill/status", oHandler.GetSeckillOrderStatus)
+		orders.POST("/:order_no/receiver", oHandler.FillReceiverInfo)
 	}
 
 	// 6.3 支付模块装配：signer → repo → service（依赖 order.Service）→ handler
@@ -159,6 +161,17 @@ func main() {
 			seckillAuth.POST("/activities/:id/buy", sHandler.Buy)
 		}
 	}
+
+	// 6.7 秒杀下单消费者：订阅 seckill-order 主题，异步建单。
+	// SeckillStockRestorer 由 seckill.StockStore 隐式实现（鸭子类型），
+	// order 包只依赖接口，不 import seckill 具体类型。
+	seckillConsumer := order.NewSeckillOrderConsumer(oSvc, rdb, sStock)
+	seckillConsumerGroup, err := kafka.NewConsumerGroup(&cfg.Kafka, []string{seckill.KafkaTopicSeckillOrder}, seckillConsumer.Handle)
+	if err != nil {
+		logger.Fatal(ctx, "start seckill order consumer failed", zap.Error(err))
+	}
+	go seckillConsumerGroup.Run(ctx)
+	defer seckillConsumerGroup.Close()
 
 	// 7. 启动 HTTP 服务（http.Server + Shutdown 支持优雅关停）
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

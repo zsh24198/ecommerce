@@ -13,8 +13,9 @@ const (
 	OrderStatusPending  OrderStatus = 1 // 待支付
 	OrderStatusPaid     OrderStatus = 2 // 已支付
 	OrderStatusShipped  OrderStatus = 3 // 已发货
-	OrderStatusDone     OrderStatus = 4 // 已完成
-	OrderStatusCanceled OrderStatus = 5 // 已取消
+	OrderStatusDone        OrderStatus = 4 // 已完成
+	OrderStatusCanceled    OrderStatus = 5 // 已取消
+	OrderStatusPendingInfo OrderStatus = 6 // 待补充收货信息（秒杀单专用，补全后进入 Pending）
 )
 
 // Order 订单主表：一个用户一次下单生成一条。

@@ -20,6 +20,14 @@ type OrderRepository interface {
 
 	// GetOrderByOrderNo 按订单号查询订单，未找到返回 nil（供 payment 模块跨域读）。
 	GetOrderByOrderNo(ctx context.Context, orderNo string) (*Order, error)
+
+	// GetOrderByIdempotencyKey 按 user_id + idempotency_key 查询订单，未找到返回 nil。
+	// 秒杀场景用 event_id 作为 idempotency_key，前端轮询时据此判断订单是否已建。
+	GetOrderByIdempotencyKey(ctx context.Context, userID int64, idempotencyKey string) (*Order, error)
+
+	// UpdateReceiverInfo 更新收货信息并推进状态：仅 PendingInfo → Pending 单向推进。
+	// WHERE 带旧状态做乐观锁，防并发重复推进。返回受影响行数（0 表示状态不匹配）。
+	UpdateReceiverInfo(ctx context.Context, orderNo, name, phone, addr string) (int64, error)
 }
 
 // SkuStockItem 扣库存所需的 SKU 信息：由 service 层从 product 模块查询后传入。
@@ -134,6 +142,37 @@ func (r *orderRepo) GetOrderByOrderNo(ctx context.Context, orderNo string) (*Ord
 		return nil, apperror.Wrap(apperror.CodeUnknown, "查询订单失败", err)
 	}
 	return o, nil
+}
+
+// GetOrderByIdempotencyKey 按 user_id + idempotency_key 查询订单，未找到返回 nil。
+func (r *orderRepo) GetOrderByIdempotencyKey(ctx context.Context, userID int64, idempotencyKey string) (*Order, error) {
+	o := &Order{}
+	if err := r.db.WithContext(ctx).
+		Where("user_id = ? AND idempotency_key = ? AND deleted_at IS NULL", userID, idempotencyKey).
+		First(o).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil
+		}
+		return nil, apperror.Wrap(apperror.CodeUnknown, "查询订单失败", err)
+	}
+	return o, nil
+}
+
+// UpdateReceiverInfo 更新收货信息并推进状态：仅 PendingInfo(6) → Pending(1)。
+// WHERE 带旧状态做乐观锁，返回受影响行数（0 表示状态不匹配，可能已被推进或订单非秒杀单）。
+func (r *orderRepo) UpdateReceiverInfo(ctx context.Context, orderNo, name, phone, addr string) (int64, error) {
+	res := r.db.WithContext(ctx).Model(&Order{}).
+		Where("order_no = ? AND status = ? AND deleted_at IS NULL", orderNo, OrderStatusPendingInfo).
+		Updates(map[string]interface{}{
+			"receiver_name":  name,
+			"receiver_phone": phone,
+			"receiver_addr":  addr,
+			"status":         OrderStatusPending,
+		})
+	if res.Error != nil {
+		return 0, apperror.Wrap(apperror.CodeUnknown, "更新收货信息失败", res.Error)
+	}
+	return res.RowsAffected, nil
 }
 
 // isDuplicateKeyErr 判断是否为 MySQL 唯一索引冲突错误（1062）。
