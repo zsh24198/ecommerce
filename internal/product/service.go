@@ -3,10 +3,13 @@ package product
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"time"
 
 	"gorm.io/datatypes"
 
 	"github.com/zsh24198/ecommerce/shared/apperror"
+	"github.com/zsh24198/ecommerce/shared/cache"
 )
 
 // CreateProductReq 创建商品请求。价格单位一律为"分"，浮点金额禁止进入系统。
@@ -78,13 +81,28 @@ type ProductService interface {
 	GetSKUByID(ctx context.Context, skuID int64) (*SKU, error)
 }
 
+// productDetailCacheTTL 详情缓存基础 TTL，叠加 ±10% 抖动防雪崩。
+const productDetailCacheTTL = 30 * time.Second
+
+// productService 增加三层缓存防护依赖。
+// bloom：防穿透，DB 中不存在的 ID 在 Test 阶段即被挡住
+// cache：防击穿 + 提升读性能，热点 key 命中后直接返回不打 DB
+// sf：防击穿，缓存 miss 时同 key 并发只回源一次
 type productService struct {
-	repo ProductRepository
+	repo  ProductRepository
+	cache cache.CacheStore[*ProductDetail]
+	bloom cache.BloomFilter
+	sf    *cache.SingleFlight
 }
 
-// NewProductService 构造函数。
-func NewProductService(repo ProductRepository) ProductService {
-	return &productService{repo: repo}
+// NewProductService 构造函数。cache/bloom/sf 均由外部注入，便于测试替换。
+func NewProductService(
+	repo ProductRepository,
+	c cache.CacheStore[*ProductDetail],
+	b cache.BloomFilter,
+	sf *cache.SingleFlight,
+) ProductService {
+	return &productService{repo: repo, cache: c, bloom: b, sf: sf}
 }
 
 // CreateProduct 组装模型 → 事务创建 → 创建成功后直接走详情查询组装返回，
@@ -121,11 +139,67 @@ func (s *productService) CreateProduct(ctx context.Context, req *CreateProductRe
 	if err := s.repo.CreateSPUWithSKUs(ctx, spu, skus); err != nil {
 		return nil, err
 	}
+	// C 方案增量写入：创建成功后立即把 SPU ID 塞入布隆。
+	// 不做这步 → 新商品被布隆误判为不存在 → GetProductDetail 第一层即返回 404。
+	// bloom.Add 是内存位操作不会失败，error 忽略但保留接口语义便于未来扩展。
+	if s.bloom != nil {
+		_ = s.bloom.Add(ctx, spu.ID)
+	}
 	return s.GetProductDetail(ctx, spu.ID)
 }
 
-// GetProductDetail 详情 = SPU 共性 + 全部启用 SKU。
+// GetProductDetail 三层防护：Bloom 预判 → Cache 查 → SingleFlight 回源。
+// 1. Bloom Test 返回 false → 直接 404，不打 DB（防穿透）
+// 2. Cache 命中 → 直接返回（防击穿 + 读性能）
+// 3. Cache miss → SingleFlight 合并并发回源（防击穿）
+// 回源成功后写回 Cache（TTL 叠加抖动防雪崩）
 func (s *productService) GetProductDetail(ctx context.Context, spuID int64) (*ProductDetail, error) {
+	// 第一层：布隆过滤器预判。若 bloom 为 nil（未启用防护）则跳过。
+	if s.bloom != nil {
+		ok, err := s.bloom.Test(ctx, spuID)
+		if err != nil {
+			return nil, apperror.Wrap(apperror.CodeUnknown, "布隆查询失败", err)
+		}
+		if !ok {
+			return nil, apperror.ErrProductNotFound
+		}
+	}
+
+	// 第二层：Redis 缓存查询。若 cache 为 nil（未启用防护）则跳过。
+	if s.cache != nil {
+		key := fmt.Sprintf("product:detail:%d", spuID)
+		detail, err := s.cache.Get(ctx, key)
+		if err != nil {
+			// Redis 异常采用 fail-open 策略，不阻断主流程，继续走回源
+			// （与限流中间件一致，业务层兜底）
+			detail = nil
+		}
+		if detail != nil {
+			return detail, nil
+		}
+	}
+
+	// 第三层：SingleFlight 合并并发回源。若 sf 为 nil 则直接回源。
+	if s.sf != nil && s.cache != nil {
+		key := fmt.Sprintf("product:detail:%d", spuID)
+		val, err, _ := s.sf.Do(ctx, key, func() (interface{}, error) {
+			return s.loadDetail(ctx, spuID)
+		})
+		if err != nil {
+			return nil, err
+		}
+		detail := val.(*ProductDetail)
+		// 回源成功后写回缓存（JitterTTL 防雪崩）
+		_ = s.cache.Set(ctx, key, detail, cache.JitterTTL(productDetailCacheTTL))
+		return detail, nil
+	}
+
+	// 未启用防护的兜底路径：直接回源
+	return s.loadDetail(ctx, spuID)
+}
+
+// loadDetail 真正回源 DB 查询 + 组装详情。被 SingleFlight 包装调用。
+func (s *productService) loadDetail(ctx context.Context, spuID int64) (*ProductDetail, error) {
 	spu, err := s.repo.FindSPUByID(ctx, spuID)
 	if err != nil {
 		return nil, err

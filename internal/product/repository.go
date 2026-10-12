@@ -27,6 +27,9 @@ type ProductRepository interface {
 	FindSKUByID(ctx context.Context, id int64) (*SKU, error)
 	// ListPriceRangeBySPUIDs 批量聚合各 SPU 的最低/最高价（一条 GROUP BY 消灭 N+1 查询）。
 	ListPriceRangeBySPUIDs(ctx context.Context, spuIDs []int64) (map[int64]PriceRange, error)
+	// ListAllSPUIDs 返回全部 SPU ID（含已下架/软删除以外的），用于布隆过滤器启动预热。
+	// 项目阶段全量在 SPU 表，预期数十万行可承受一次扫描。
+	ListAllSPUIDs(ctx context.Context) ([]int64, error)
 }
 
 // PriceRange 某 SPU 下启用 SKU 的价格区间（单位：分）。
@@ -98,6 +101,18 @@ func (r *productRepo) ListSPUs(ctx context.Context, page, size int) ([]SPU, int6
 }
 
 // ListSKUsBySPUID 查询某 SPU 下启用的 SKU。
+// ListAllSPUIDs 只查 id 列，避免拉取不必要字段。
+func (r *productRepo) ListAllSPUIDs(ctx context.Context) ([]int64, error) {
+	var ids []int64
+	err := r.db.WithContext(ctx).Model(&SPU{}).
+		Where("deleted_at IS NULL").
+		Pluck("id", &ids).Error
+	if err != nil {
+		return nil, apperror.Wrap(apperror.CodeUnknown, "查询全部 SPU ID 失败", err)
+	}
+	return ids, nil
+}
+
 func (r *productRepo) ListSKUsBySPUID(ctx context.Context, spuID int64) ([]SKU, error) {
 	var skus []SKU
 	err := r.db.WithContext(ctx).

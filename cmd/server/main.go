@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/internal/seckill"
 	"github.com/zsh24198/ecommerce/internal/user"
+	"github.com/zsh24198/ecommerce/shared/cache"
 	"github.com/zsh24198/ecommerce/shared/config"
 	"github.com/zsh24198/ecommerce/shared/jwtx"
 	"github.com/zsh24198/ecommerce/shared/kafka"
@@ -85,9 +87,38 @@ func main() {
 		users.POST("/refresh", h.RefreshToken)
 	}
 
-	// 6.1 商品模块装配：repo → service → handler → 路由
+	// 6.1 商品模块装配：repo → cache/bloom/sf → service → handler → 路由
 	pRepo := product.NewProductRepository(db)
-	pSvc := product.NewProductService(pRepo)
+
+	// 6.1.1 布隆过滤器启动预热（A 方案）：全量加载 SPU ID。
+	// 容量预估 10w（预期 5w 商品 × 2 倍余量），误判率 0.1%（0.001）。
+	// pRepo 在上一步已构造，这里跨调用复用。
+	pBloom := cache.NewBloomFilter(100000, 0.001)
+	if ids, err := pRepo.ListAllSPUIDs(ctx); err != nil {
+		logger.Warn(ctx, "bloom warmup failed, will start with empty bloom",
+			zap.Error(err))
+	} else {
+		if err := pBloom.LoadBulk(ctx, ids); err != nil {
+			logger.Warn(ctx, "bloom load bulk failed", zap.Error(err))
+		} else {
+			logger.Info(ctx, "bloom warmup done",
+				zap.Int("loaded", len(ids)))
+		}
+	}
+
+	// 6.1.2 Redis CacheStore 构造。decode 由业务方注入：cache 包不认识 *ProductDetail。
+	pCache := cache.NewRedisCache[*product.ProductDetail](rdb.Client, func(data []byte) (*product.ProductDetail, error) {
+		var d product.ProductDetail
+		if err := json.Unmarshal(data, &d); err != nil {
+			return nil, err
+		}
+		return &d, nil
+	})
+
+	// 6.1.3 SingleFlight 全局共享实例。
+	sf := cache.NewSingleFlight()
+
+	pSvc := product.NewProductService(pRepo, pCache, pBloom, sf)
 	pHandler := product.NewHandler(pSvc)
 	products := r.Group("/api/v1/products")
 	{
@@ -145,7 +176,7 @@ func main() {
 
 	// 6.6 秒杀模块装配：repo → service（依赖 product.Service）→ handler
 	sRepo := seckill.NewSeckillRepository(db)
-	sCache := seckill.NewActivityCache(sRepo)
+	sCache := seckill.NewActivityCache(sRepo, sf)
 	sStock := seckill.NewStockStore(rdb)
 	sSvc := seckill.NewSeckillService(sRepo, pSvc, sCache, sStock, kafkaProducer)
 	sHandler := seckill.NewHandler(sSvc)
