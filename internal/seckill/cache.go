@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"ecommerce/shared/cache"
+	"github.com/zsh24198/ecommerce/shared/cache"
 )
 
 // activityCacheTTL 缓存兜底过期：活动时间窗口是静态数据，显式失效为主，TTL 防遗漏（如多实例）。
