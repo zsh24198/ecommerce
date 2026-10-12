@@ -18,6 +18,15 @@ const (
 	OrderStatusPendingInfo OrderStatus = 6 // 待补充收货信息（秒杀单专用，补全后进入 Pending）
 )
 
+// OrderType 订单类型：区分库存回补路径。
+// 普通单回补 MySQL skus.stock，秒杀单回补 Redis seckill:stock:{item_id}。
+type OrderType uint8
+
+const (
+	OrderTypeNormal  OrderType = 0 // 普通订单，库存扣在 MySQL skus 表
+	OrderTypeSeckill OrderType = 1 // 秒杀订单，库存扣在 Redis StockStore
+)
+
 // Order 订单主表：一个用户一次下单生成一条。
 type Order struct {
 	ID            int64          `gorm:"column:id;primaryKey;autoIncrement"`
@@ -29,6 +38,9 @@ type Order struct {
 	ReceiverPhone string         `gorm:"column:receiver_phone;type:varchar(20);not null;default:''"`
 	ReceiverAddr  string         `gorm:"column:receiver_addr;type:varchar(512);not null;default:''"`
 	IdempotencyKey string        `gorm:"column:idempotency_key;type:varchar(64);not null;default:''"`
+	OrderType      OrderType     `gorm:"column:order_type;type:tinyint unsigned;not null;default:0"`
+	SeckillItemID  *int64        `gorm:"column:seckill_item_id;type:bigint unsigned;comment:秒杀商品 ID，仅秒杀单非空"`
+	StatusChangedAt time.Time    `gorm:"column:status_changed_at;type:datetime(3);not null;default:CURRENT_TIMESTAMP(3)"`
 	CreatedAt     time.Time      `gorm:"column:created_at;type:datetime(3)"`
 	UpdatedAt     time.Time      `gorm:"column:updated_at;type:datetime(3)"`
 	DeletedAt     gorm.DeletedAt `gorm:"column:deleted_at;type:datetime(3);index:idx_orders_deleted_at"`

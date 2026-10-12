@@ -9,7 +9,9 @@ import (
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/shared/apperror"
 	"github.com/zsh24198/ecommerce/shared/lock"
+	"github.com/zsh24198/ecommerce/shared/logger"
 	redisclient "github.com/zsh24198/ecommerce/shared/redis"
+	"go.uber.org/zap"
 )
 
 // CreateOrderReq 下单请求 DTO。
@@ -55,17 +57,52 @@ type OrderService interface {
 	// FillReceiverInfo 秒杀单补填收货信息：仅 PendingInfo → Pending 单向推进。
 	// 补全后订单进入待支付状态，可发起支付。
 	FillReceiverInfo(ctx context.Context, userID int64, orderNo, name, phone, addr string) error
+
+	// CancelExpiredOrders 批量取消超时未支付订单并回补库存。
+	// 调用方：定时器（ticker）周期性调用。返回成功取消的数量。
+	// 内部流程：扫超时订单 → 按状态抢独占权 → 按 order_type 分发回补 → 失败不回滚状态。
+	CancelExpiredOrders(ctx context.Context) (int, error)
 }
 
 type orderService struct {
-	repo    OrderRepository
-	product product.ProductService // 跨域调用：通过 product.Service 接口，不碰 product.Repository
-	redis   *redisclient.Client
-	locker  *lock.Manager // 分布式锁：按 SKU 粒度互斥，防并发超卖
+	repo      OrderRepository
+	product   product.ProductService // 跨域调用：通过 product.Service 接口，不碰 product.Repository
+	redis     *redisclient.Client
+	locker    *lock.Manager           // 分布式锁：按 SKU 粒度互斥，防并发超卖
+	restorer  SeckillStockRestorer   // 跨域注入：秒杀库存回补接口，nil 表示不启用秒杀单回补
+	taskCfg   TaskConfig              // 定时任务配置（超时阈值、批量大小）
+}
+
+// TaskConfig 定时任务运行时配置。可在 main.go 从 config 文件注入。
+type TaskConfig struct {
+	InfoExpireMinutes int // PendingInfo 超时阈值，默认 15 分钟
+	PayExpireMinutes  int // Pending 超时阈值，默认 30 分钟
+	BatchSize         int // 单批扫描上限，默认 100
 }
 
 func NewOrderService(repo OrderRepository, productSvc product.ProductService, rdb *redisclient.Client, locker *lock.Manager) OrderService {
-	return &orderService{repo: repo, product: productSvc, redis: rdb, locker: locker}
+	return &orderService{
+		repo: repo, product: productSvc, redis: rdb, locker: locker,
+		taskCfg: TaskConfig{InfoExpireMinutes: 15, PayExpireMinutes: 30, BatchSize: 100},
+	}
+}
+
+// NewOrderServiceWithRestorer 创建带秒杀回补器的订单服务，生产装配专用。
+// restorer 由 seckill.StockStore 隐式实现（接口注入防跨域 import），nil 表示禁用秒杀回补路径。
+// 与 NewOrderService 并行存在：旧调用点（svctest/repostest）不需修改。
+func NewOrderServiceWithRestorer(
+	repo OrderRepository, productSvc product.ProductService, rdb *redisclient.Client, locker *lock.Manager, restorer SeckillStockRestorer,
+) OrderService {
+	return &orderService{
+		repo: repo, product: productSvc, redis: rdb, locker: locker, restorer: restorer,
+		taskCfg: TaskConfig{InfoExpireMinutes: 15, PayExpireMinutes: 30, BatchSize: 100},
+	}
+}
+
+// SetSeckillRestorer 注入秒杀库存回补接口（main.go 装配时调用）。
+// 不走构造函数以兼容旧有调用点，仅启用秒杀回补时调用。
+func (s *orderService) SetSeckillRestorer(r SeckillStockRestorer) {
+	s.restorer = r
 }
 
 // 幂等键在 Redis 中的占位符，表示首次请求正在处理中。
@@ -143,6 +180,7 @@ func (s *orderService) CreateSeckillOrder(ctx context.Context, msg *SeckillOrder
 	}
 	subtotal := msg.SeckillPriceCents * int64(msg.Quantity)
 
+	itemID := msg.ItemID
 	order := &Order{
 		OrderNo:        genOrderNo(),
 		UserID:         msg.UserID,
@@ -152,6 +190,8 @@ func (s *orderService) CreateSeckillOrder(ctx context.Context, msg *SeckillOrder
 		ReceiverPhone:  "",
 		ReceiverAddr:   "",
 		IdempotencyKey: msg.EventID, // 消费端幂等键落库，配合唯一索引兜底
+		OrderType:      OrderTypeSeckill,
+		SeckillItemID:  &itemID, // 回补时定位 Redis key seckill:stock:{item_id}
 	}
 	items := []OrderItem{{
 		SKUID:      msg.SKUID,
@@ -313,6 +353,76 @@ func (s *orderService) GetOrderInfoByNo(ctx context.Context, orderNo string) (*O
 		TotalAmount: o.TotalAmount,
 		Status:      o.Status,
 	}, nil
+}
+
+var cancelFromStatuses = []OrderStatus{OrderStatusPendingInfo, OrderStatusPending}
+
+// CancelExpiredOrders 扫描超时未支付订单 → 抢独占权 → 分发回补 → 不回滚。
+// 设计详见任务 24 决策：
+//   - 先 UPDATE 抢独占权：受影响 0 表示已被其他实例处理，跳过；1 表示拿到独占权。
+//   - 抢到独占权后即使回补失败也不回滚状态，避免重复回补导致超卖。
+//   - 回补失败走补偿队列（TODO 未实现，当前仅记日志 + 依赖人工对账）。
+func (s *orderService) CancelExpiredOrders(ctx context.Context) (int, error) {
+	now := time.Now()
+	infoCutoff := now.Add(-time.Duration(s.taskCfg.InfoExpireMinutes) * time.Minute)
+	payCutoff := now.Add(-time.Duration(s.taskCfg.PayExpireMinutes) * time.Minute)
+
+	orders, err := s.repo.ListExpiredOrders(ctx, infoCutoff, payCutoff, s.taskCfg.BatchSize)
+	if err != nil {
+		return 0, err
+	}
+
+	canceled := 0
+	for i := range orders {
+		o := &orders[i]
+		affected, err := s.repo.UpdateStatusIfMatch(ctx, o.OrderNo, cancelFromStatuses, OrderStatusCanceled)
+		if err != nil {
+			logger.Error(ctx, "advance order to canceled failed",
+				zap.String("order_no", o.OrderNo), zap.Error(err))
+			continue
+		}
+		if affected == 0 {
+			continue // 已被其他实例处理，不是本实例责任
+		}
+
+		// 抢到独占权，执行回补。失败不回滚状态，走补偿。
+		if err := s.restoreStock(ctx, o); err != nil {
+			logger.Error(ctx, "restore stock failed, order stays canceled, needs manual reconcile",
+				zap.String("order_no", o.OrderNo), zap.Uint8("order_type", uint8(o.OrderType)), zap.Error(err))
+			continue // 不回滚状态，等待补偿队列
+		}
+		canceled++
+	}
+	return canceled, nil
+}
+
+// restoreStock 按订单类型分发回补路径。
+//   - 秒杀单：调注入的 SeckillStockRestorer.Restore(item_id, qty)，Redis 条件 INCRBY
+//   - 普通单：本地 SQL 回补 MySQL skus.stock
+// 二者都遵循「库存只增不减」原则，重复调用安全。
+func (s *orderService) restoreStock(ctx context.Context, o *Order) error {
+	switch o.OrderType {
+	case OrderTypeSeckill:
+		if s.restorer == nil || o.SeckillItemID == nil {
+			return apperror.New(apperror.CodeUnknown, "秒杀单未装配回补器或缺少 item_id")
+		}
+		// 取订单数量：秒杀单只有一个 SKU 明细，查 order_items 拿 qty。
+		qty, err := s.repo.SumOrderItemQuantity(ctx, o.OrderNo)
+		if err != nil {
+			return err
+		}
+		ok, err := s.restorer.Restore(ctx, *o.SeckillItemID, qty)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			// key 不存在拒绝盲补，返回原样以触发上层记日志 + 补偿
+			return apperror.New(apperror.CodeUnknown, "秒杀库存 key 未预热，拒绝盲补")
+		}
+		return nil
+	default:
+		return s.repo.RestockNormalItems(ctx, o.OrderNo)
+	}
 }
 
 // genOrderNo 生成业务订单号：年月日时分秒 + 6位随机数。
