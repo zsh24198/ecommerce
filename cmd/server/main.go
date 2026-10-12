@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -75,10 +76,12 @@ func main() {
 	r := gin.New()
 	r.Use(middleware.Recovery())
 	r.Use(middleware.TraceID())
+	r.Use(middleware.Prometheus())
 	r.Use(middleware.CORS())
 	r.Use(middleware.Logger())
 
 	// 6. 注册路由：构造 handler → 路由分组 → 挂载接口
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	h := user.NewHandler(svc)
 	users := r.Group("/api/v1/users")
 	{
