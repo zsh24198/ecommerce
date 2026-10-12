@@ -95,3 +95,10 @@ func Fatal(ctx context.Context, msg string, fields ...zap.Field) {
 func Sync() {
 	_ = defaultLogger.Sync()
 }
+
+// SetLogger 替换全局 defaultLogger。仅用于测试注入（如 zap.NewNop()），
+// 避免测试时 defaultLogger 为 nil 导致 nil pointer panic。
+// 禁止在业务代码使用，业务代码请走 Init(cfg) 正规初始化路径。
+func SetLogger(l *zap.Logger) {
+	defaultLogger = l
+}

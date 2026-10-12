@@ -34,3 +34,7 @@ configs/config.yaml
 
 # Temporary test programs
 cmd/logtest/
+server
+/cmd/server/server
+*.exe
+*.test

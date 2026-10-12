@@ -156,7 +156,14 @@ func main() {
 		seckillGrp.GET("/ongoing", sHandler.ListOngoingActivities)
 		seckillGrp.GET("/activities/:id", sHandler.GetActivity)
 		seckillGrp.PUT("/activities/:id/enabled", sHandler.UpdateActivityEnabled)
-		seckillAuth := seckillGrp.Group("", middleware.JWT(jwtMgr))
+		// 秒杀抢购入口：三层限流叠加（顺序不能错）
+		// IP 限流(无需 user_id,最早短路) → JWT(消耗 CPU,放在 IP 之后) → 用户限流(需 user_id,必须在 JWT 之后) → 全局兜底(最后)
+		seckillAuth := seckillGrp.Group("",
+			middleware.PerKeyRateLimit(rdb, 10, 5, middleware.IPKeyFunc()),
+			middleware.JWT(jwtMgr),
+			middleware.PerKeyRateLimit(rdb, 2, 1, middleware.UserKeyFunc()),
+			middleware.GlobalRateLimit(5000, 8000),
+		)
 		{
 			seckillAuth.POST("/activities/:id/buy", sHandler.Buy)
 		}
