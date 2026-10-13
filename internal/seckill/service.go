@@ -3,15 +3,19 @@ package seckill
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/sony/gobreaker"
 	"go.uber.org/zap"
 
+	"github.com/zsh24198/ecommerce/internal/order"
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/shared/apperror"
+	"github.com/zsh24198/ecommerce/shared/breaker"
 	"github.com/zsh24198/ecommerce/shared/kafka"
 	"github.com/zsh24198/ecommerce/shared/logger"
 )
@@ -93,17 +97,39 @@ type SeckillService interface {
 
 const activityTimeLayout = "2006-01-02 15:04:05"
 
+// SeckillOrderCreator 降级同步建单接口：由 order.Service.CreateSeckillOrder 隐式实现。
+// 仅注入这一个方法（而非整个 OrderService），最小化跨域耦合面。
+type SeckillOrderCreator interface {
+	CreateSeckillOrder(ctx context.Context, msg *order.SeckillOrderMsg) (string, error)
+}
+
 type seckillService struct {
-	repo     SeckillRepository
-	product  product.ProductService
-	cache    *ActivityCache
-	stock    *StockStore
-	producer *kafka.Producer
+	repo           SeckillRepository
+	product        product.ProductService
+	cache          *ActivityCache
+	stock          *StockStore
+	producer       *kafka.Producer
+	orderCreator   SeckillOrderCreator // Kafka 挂了时降级用：nil 表示无降级能力
+	redisBreaker   *breaker.Breaker    // Redis 熔断：挂了直接拒绝（fail-closed）
+	kafkaBreaker   *breaker.Breaker    // Kafka 熔断：挂了走降级同步写订单
 }
 
 // NewSeckillService 构造函数。跨域读 SKU 走 product.Service 接口，不碰 product.Repository。
-func NewSeckillService(repo SeckillRepository, productSvc product.ProductService, cache *ActivityCache, stock *StockStore, producer *kafka.Producer) SeckillService {
-	return &seckillService{repo: repo, product: productSvc, cache: cache, stock: stock, producer: producer}
+// orderCreator、redisBreaker、kafkaBreaker 均可为 nil（测试场景），生产装配必须全部注入。
+func NewSeckillService(
+	repo SeckillRepository,
+	productSvc product.ProductService,
+	cache *ActivityCache,
+	stock *StockStore,
+	producer *kafka.Producer,
+	orderCreator SeckillOrderCreator,
+	redisBreaker, kafkaBreaker *breaker.Breaker,
+) SeckillService {
+	return &seckillService{
+		repo: repo, product: productSvc, cache: cache, stock: stock,
+		producer: producer, orderCreator: orderCreator,
+		redisBreaker: redisBreaker, kafkaBreaker: kafkaBreaker,
+	}
 }
 
 // CreateActivity 创建活动：时间校验 → 逐 SKU 校验+快照 → 重叠校验 → 事务落库。
@@ -267,9 +293,29 @@ type SeckillOrderEvent struct {
 	SeckillPriceCents int64  `json:"seckill_price_cents"`
 }
 
-// DoSeckill 秒杀下单：内存校验 → Redis Lua 预扣 → 同步发 Kafka 异步建单。
-// 预扣成功即受理成功；发送失败立即回补（宁可少卖，绝不超卖）。
+// isDependencyErr 判断错误是否属于依赖故障（Redis/Kafka 挂了），而非业务拒绝。
+// 只有依赖故障才累计熔断计数；售罄/已购买/未预热等业务错误不计入。
+func isDependencyErr(err error) bool {
+	var ae *apperror.AppError
+	if errors.As(err, &ae) {
+		switch ae.Code {
+		case apperror.CodeRedisError, apperror.CodeKafkaProduce:
+			return true
+		}
+	}
+	if err == gobreaker.ErrOpenState || err == gobreaker.ErrTooManyRequests {
+		return true
+	}
+	return false
+}
+
+// DoSeckill 秒杀下单（带熔断+降级）：
+//  1. 内存校验（活动状态 + 商品匹配 + 限购）——纯本地，无依赖
+//  2. Redis Lua 预扣（带熔断）——Redis 熔断打开时 fail-closed 直接拒绝
+//  3. 同步发 Kafka（带熔断）——Kafka 熔断打开或发送失败时，降级同步写订单
+//  4. 任何失败（含降级失败）都立即回补 Redis 库存，宁可少卖绝不超卖
 func (s *seckillService) DoSeckill(ctx context.Context, userID, activityID int64, req *DoSeckillReq) error {
+	// —— 阶段 1：纯内存校验，不碰任何依赖 ——
 	act, items, err := s.cache.Get(ctx, activityID)
 	if err != nil {
 		return err
@@ -290,9 +336,29 @@ func (s *seckillService) DoSeckill(ctx context.Context, userID, activityID int64
 	if req.Quantity > item.LimitPerUser {
 		return apperror.New(apperror.CodeParamInvalid, "超过单用户限购数量")
 	}
-	if err := s.stock.Deduct(ctx, req.ItemID, req.Quantity); err != nil {
+
+	// —— 阶段 2：Redis Lua 预扣（带熔断）——
+	// 只有依赖错误才累计熔断计数，业务错误（售罄/已购买）直接返回不触发熔断
+	reqQty := req.Quantity
+	if s.redisBreaker != nil {
+		err = s.redisBreaker.Execute(func() error {
+			return s.stock.DeductForUser(ctx, userID, activityID, item.ID, reqQty)
+		})
+	} else {
+		err = s.stock.DeductForUser(ctx, userID, activityID, item.ID, reqQty)
+	}
+	// 业务错误：不是 Redis 真故障，直接返回，不累计熔断
+	if err != nil && !isDependencyErr(err) {
 		return err
 	}
+	if err != nil {
+		if errors.Is(err, gobreaker.ErrOpenState) {
+			return apperror.New(apperror.CodeCircuitOpen, "系统繁忙，请稍后再试")
+		}
+		return apperror.Wrap(apperror.CodeRedisError, "秒杀库存暂不可用，请稍后再试", err)
+	}
+
+	// —— 阶段 3：构建事件，准备发 Kafka ——
 	evt := SeckillOrderEvent{
 		EventID:           uuid.NewString(),
 		UserID:            userID,
@@ -300,22 +366,83 @@ func (s *seckillService) DoSeckill(ctx context.Context, userID, activityID int64
 		ItemID:            item.ID,
 		SKUID:             item.SKUID,
 		SKUName:           item.SKUNameSnapshot,
-		Quantity:          req.Quantity,
+		Quantity:          reqQty,
 		SeckillPriceCents: item.SeckillPriceCents,
 	}
 	payload, err := json.Marshal(evt)
 	if err != nil {
-		_, _ = s.stock.Restore(ctx, item.ID, req.Quantity)
+		_, _ = s.stock.Restore(ctx, item.ID, reqQty)
 		return apperror.Wrap(apperror.CodeUnknown, "marshal seckill order event", err)
 	}
-	key := strconv.FormatInt(userID, 10)
-	if _, _, err := s.producer.SendMessage(KafkaTopicSeckillOrder, key, payload); err != nil {
-		if ok, rerr := s.stock.Restore(ctx, item.ID, req.Quantity); rerr != nil || !ok {
-			logger.Error(ctx, "seckill stock restore failed", zap.Int64("item_id", item.ID), zap.Error(rerr))
+
+	// —— 阶段 4：发 Kafka（带熔断 + 降级）——
+	// 正常路径：发 Kafka → 异步建单
+	// 失败路径：熔断打开 OR 发送失败 → 降级同步写订单
+	deliverErr := s.sendWithFallback(ctx, item, reqQty, &evt, payload)
+	if deliverErr != nil {
+		// 最终失败：回补 Redis 库存
+		if ok, rerr := s.stock.Restore(ctx, item.ID, reqQty); rerr != nil || !ok {
+			logger.Error(ctx, "seckill stock restore failed",
+				zap.Int64("item_id", item.ID), zap.Int("qty", reqQty), zap.Error(rerr))
 		}
-		return apperror.Wrap(apperror.CodeKafkaProduce, "抢购请求受理失败，请稍后重试", err)
+		return deliverErr
 	}
 	return nil
+}
+
+// sendWithFallback 发 Kafka + 降级同步写订单。
+// kafkaBreaker 打开或 SendMessage 失败时，尝试走 orderCreator 同步建单；
+// orderCreator 为 nil 或降级也失败时，返回错误让上层回补 Redis 库存。
+func (s *seckillService) sendWithFallback(
+	ctx context.Context, item *SeckillItem, qty int,
+	evt *SeckillOrderEvent, payload []byte,
+) error {
+	key := strconv.FormatInt(evt.UserID, 10)
+
+	// 尝试正常路径：发 Kafka（带熔断）
+	var kafkaErr error
+	if s.kafkaBreaker != nil {
+		kafkaErr = s.kafkaBreaker.Execute(func() error {
+			_, _, err := s.producer.SendMessage(KafkaTopicSeckillOrder, key, payload)
+			return err
+		})
+	} else {
+		_, _, kafkaErr = s.producer.SendMessage(KafkaTopicSeckillOrder, key, payload)
+	}
+
+	if kafkaErr == nil {
+		return nil // 正常路径成功
+	}
+
+	// Kafka 故障 → 尝试降级同步写订单
+	if s.orderCreator != nil {
+		msg := &order.SeckillOrderMsg{
+			EventID:           evt.EventID,
+			UserID:            evt.UserID,
+			ActivityID:        evt.ActivityID,
+			ItemID:            evt.ItemID,
+			SKUID:             evt.SKUID,
+			SKUName:           evt.SKUName,
+			Quantity:          evt.Quantity,
+			SeckillPriceCents: evt.SeckillPriceCents,
+		}
+		if _, err := s.orderCreator.CreateSeckillOrder(ctx, msg); err == nil {
+			logger.Warn(ctx, "seckill degraded: kafka failed, sync order success",
+				zap.String("event_id", evt.EventID),
+				zap.String("kafka_err", kafkaErr.Error()))
+			return apperror.New(apperror.CodeDegraded, "系统繁忙，已降级处理，请稍后查询订单")
+		} else {
+			logger.Error(ctx, "seckill degraded fallback failed",
+				zap.String("event_id", evt.EventID),
+				zap.Error(err))
+		}
+	}
+
+	// 降级也不可用 → 最终失败
+	if errors.Is(kafkaErr, gobreaker.ErrOpenState) {
+		return apperror.New(apperror.CodeCircuitOpen, "系统繁忙，请稍后重试")
+	}
+	return apperror.Wrap(apperror.CodeKafkaProduce, "抢购请求受理失败，请稍后重试", kafkaErr)
 }
 
 // buildDetail 组装详情 DTO，状态推导时间统一取一次 now，保证同一请求内状态一致。

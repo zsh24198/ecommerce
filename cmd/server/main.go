@@ -23,6 +23,7 @@ import (
 	"github.com/zsh24198/ecommerce/internal/product"
 	"github.com/zsh24198/ecommerce/internal/seckill"
 	"github.com/zsh24198/ecommerce/internal/user"
+	"github.com/zsh24198/ecommerce/shared/breaker"
 	"github.com/zsh24198/ecommerce/shared/cache"
 	"github.com/zsh24198/ecommerce/shared/config"
 	"github.com/zsh24198/ecommerce/shared/jwtx"
@@ -177,11 +178,17 @@ func main() {
 	go consumerGroup.Run(ctx)
 	defer consumerGroup.Close()
 
-	// 6.6 秒杀模块装配：repo → service（依赖 product.Service）→ handler
+	// 6.6 熔断降级组件：Redis/Kafka 各一套
+	// Redis 熔断：5 次连续依赖故障 → 打开，30s 后探测（fail-closed，保护 DB）
+	redisBreaker := breaker.New(breaker.DefaultConfig("seckill_redis"))
+	// Kafka 熔断：5 次连续发送失败 → 打开，30s 后探测（打开时降级同步写订单）
+	kafkaBreaker := breaker.New(breaker.DefaultConfig("seckill_kafka"))
+
+	// 6.7 秒杀模块装配：repo → service（依赖 product.Service + orderService + breaker）→ handler
 	sRepo := seckill.NewSeckillRepository(db)
 	sCache := seckill.NewActivityCache(sRepo, sf)
 	sStock := seckill.NewStockStore(rdb)
-	sSvc := seckill.NewSeckillService(sRepo, pSvc, sCache, sStock, kafkaProducer)
+	sSvc := seckill.NewSeckillService(sRepo, pSvc, sCache, sStock, kafkaProducer, oSvc, redisBreaker, kafkaBreaker)
 	sHandler := seckill.NewHandler(sSvc)
 	seckillGrp := r.Group("/api/v1/seckill")
 	{

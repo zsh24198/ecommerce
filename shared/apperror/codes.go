@@ -42,7 +42,9 @@ const (
 	CodeSeckillStockNotReady    = 5019 // 秒杀库存未预热（系统异常，请稍后再试）
 	CodeSeckillNotOngoing       = 5020 // 秒杀活动未开始或已结束
 	CodeSeckillOrderNotCreated  = 5021 // 秒杀订单未创建（异步处理中，前端继续轮询）
+	CodeSeckillAlreadyBought    = 5022 // 该用户已抢购过该活动（一人一单约束）
 
 	CodeRateLimited = 6001 // 触发限流
-	CodeDegraded    = 6002 // 服务降级
+	CodeDegraded    = 6002 // 服务降级（已自动降级到同步模式）
+	CodeCircuitOpen = 6003 // 熔断器打开：依赖故障，请求被快速拒绝
 )
