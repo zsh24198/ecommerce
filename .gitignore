@@ -17,6 +17,11 @@ go.work.sum
 *.pem
 *.key
 
+# Python agent
+agent/.venv/
+__pycache__/
+*.pyc
+
 # Logs & runtime
 logs/
 *.log
