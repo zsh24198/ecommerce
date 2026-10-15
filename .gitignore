@@ -43,3 +43,5 @@ server
 /cmd/server/server
 *.exe
 *.test
+agent/.venv/
+agent/.venv/
