@@ -34,6 +34,8 @@ type UserService interface {
 	Login(ctx context.Context, phone, password string) (*TokenPair, error)
 	// RefreshToken 用 refresh token 换新 token 对，旧 token 立即轮换作废。
 	RefreshToken(ctx context.Context, refreshToken string) (*TokenPair, error)
+	// GetUserByID 按用户 ID 查询脱敏信息，供 Agent 跨域调用。
+	GetUserByID(ctx context.Context, id int64) (*UserInfo, error)
 }
 
 // userService 依赖注入：repo 负责数据，jwt 负责签发/解析，配置由 Manager 内部持有。
@@ -108,6 +110,15 @@ func (s *userService) RefreshToken(ctx context.Context, refreshToken string) (*T
 		return nil, err
 	}
 	return s.issueTokenPair(ctx, claims.UserID)
+}
+
+// GetUserByID 按 ID 查用户，复用 repo.FindByID，只返回脱敏后的 UserInfo。
+func (s *userService) GetUserByID(ctx context.Context, id int64) (*UserInfo, error) {
+	u, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &UserInfo{ID: u.ID, Phone: u.Phone, Status: u.Status}, nil
 }
 
 // issueTokenPair 签发 access/refresh 对，refresh 哈希入库（expires_at 与签发 TTL 同源）。

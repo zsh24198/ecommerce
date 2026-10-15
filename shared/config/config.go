@@ -16,6 +16,13 @@ type Config struct {
 	Log     LogConfig     `mapstructure:"log"`
 	JWT     JWTConfig     `mapstructure:"jwt"`
 	Payment PaymentConfig `mapstructure:"payment"`
+	Agent   AgentConfig   `mapstructure:"agent"`
+}
+
+// AgentConfig Agent 接入配置。
+// Token 是固定字符串，从环境变量 ECOMMERCE_AGENT_TOKEN 注入，禁止硬编码到代码。
+type AgentConfig struct {
+	Token string `mapstructure:"token"`
 }
 
 type ServerConfig struct {

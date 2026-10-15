@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
+	"github.com/zsh24198/ecommerce/internal/agent"
 	"github.com/zsh24198/ecommerce/internal/order"
 	"github.com/zsh24198/ecommerce/internal/outbox"
 	"github.com/zsh24198/ecommerce/internal/payment"
@@ -220,6 +221,16 @@ func main() {
 	}
 	go seckillConsumerGroup.Run(ctx)
 	defer seckillConsumerGroup.Close()
+
+	// 6.8 Agent 专用 API：面向 Python Agent，复用各业务域 Service 接口，参数极简。
+	// 鉴权用固定 Agent Token（X-Agent-Token 头），与用户 JWT 分流。
+	agentHandler := agent.NewHandler(svc, pSvc, oSvc)
+	agentGrp := r.Group("/internal/agent", agent.AgentAuth(cfg.Agent.Token))
+	{
+		agentGrp.POST("/orders/query", agentHandler.QueryOrder)
+		agentGrp.POST("/products/query", agentHandler.QueryProduct)
+		agentGrp.POST("/users/query", agentHandler.QueryUser)
+	}
 
 	// 7. 启动 HTTP 服务（http.Server + Shutdown 支持优雅关停）
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

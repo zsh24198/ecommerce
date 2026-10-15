@@ -37,6 +37,11 @@ jwt:
 payment:
   sign_secret: dev-payment-sign-secret-change-me
 
+# Agent 接入：固定 token 用于 Python Agent 调用 /internal/agent/* 接口。
+# 生产环境必须通过环境变量 ECOMMERCE_AGENT_TOKEN 覆盖，禁止使用默认值。
+agent:
+  token: change-me-in-production
+
 kafka:
   brokers:
     - 127.0.0.1:9092
