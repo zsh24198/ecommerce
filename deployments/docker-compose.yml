@@ -49,6 +49,9 @@
         KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
         KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
         KAFKA_LOG_DIRS: /var/lib/kafka/data
+        # 降维：JVM 堆缩到 256m（开发环境零负载够用），日志保留 1 小时
+        KAFKA_HEAP_OPTS: '-Xmx256m -Xms128m'
+        KAFKA_LOG_RETENTION_HOURS: 1
       volumes:
         - kafka-data:/var/lib/kafka/data
       healthcheck:
