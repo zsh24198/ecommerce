@@ -3,7 +3,9 @@ package middleware
 
 import (
 	"context"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -101,10 +103,32 @@ func PerKeyRateLimit(rdb tokenBucketer, capacity, refillPerSec int, keyFunc func
 
 // ----- keyFunc 工厂：复用逻辑 -----
 
+// loadtestWhitelist 从环境变量 LOADTEST_WHITELIST 读取白名单 IP（逗号分隔）。
+// 命中白名单时 IPKeyFunc 返回空串，触发 PerKeyRateLimit 的放行兜底。
+// 用途：压测机 IP 绕过 IP 限流，保留用户限流与全局限流。
+var loadtestWhitelist = strings.TrimSpace(os.Getenv("LOADTEST_WHITELIST"))
+
+func isWhitelisted(ip string) bool {
+	if loadtestWhitelist == "" {
+		return false
+	}
+	for _, w := range strings.Split(loadtestWhitelist, ",") {
+		if strings.TrimSpace(w) == ip {
+			return true
+		}
+	}
+	return false
+}
+
 // IPKeyFunc 提取客户端 IP 作为限流 key 前缀。
+// 命中白名单（环境变量 LOADTEST_WHITELIST）时返回空串，跳过 IP 限流。
 func IPKeyFunc() func(*gin.Context) string {
 	return func(c *gin.Context) string {
-		return "ip:" + c.ClientIP()
+		ip := c.ClientIP()
+		if isWhitelisted(ip) {
+			return ""
+		}
+		return "ip:" + ip
 	}
 }
 
