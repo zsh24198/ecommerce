@@ -8,6 +8,10 @@ import (
 	"time"
 
 	"github.com/IBM/sarama"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/zsh24198/ecommerce/shared/config"
@@ -70,11 +74,26 @@ func (h *groupHandler) Cleanup(sarama.ConsumerGroupSession) error { return nil }
 // ConsumeClaim 逐条处理分区消息：成功才 Mark+Commit；失败则返回 error，分区停摆等待重投。
 func (h *groupHandler) ConsumeClaim(sess sarama.ConsumerGroupSession, claim sarama.ConsumerGroupClaim) error {
 	for msg := range claim.Messages() {
-		if err := h.handler(sess.Context(), msg); err != nil {
+		// 从消息 headers 提取上游 traceparent 恢复链路，再创建 consumer span，
+		// handler 及其内部所有 span 都挂在这条完整链路上
+		ctx, span := tracer.Start(
+			otel.GetTextMapPropagator().Extract(sess.Context(), &saramaHeaderCarrier{headers: &msg.Headers}),
+			"kafka.consume",
+			trace.WithSpanKind(trace.SpanKindConsumer),
+			trace.WithAttributes(
+				attribute.String("messaging.system", "kafka"),
+				attribute.String("messaging.destination.name", msg.Topic),
+			))
+
+		if err := h.handler(ctx, msg); err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, "kafka message handle failed")
+			span.End()
 			logger.Error(sess.Context(), "kafka message handle failed",
 				zap.String("topic", msg.Topic), zap.Int64("offset", msg.Offset), zap.Error(err))
 			return err
 		}
+		span.End()
 		sess.MarkMessage(msg, "")
 		sess.Commit()
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/redis/go-redis/extra/redisotel/v9"
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/zsh24198/ecommerce/shared/config"
@@ -25,6 +26,12 @@ func New(cfg *config.RedisConfig) (*Client, error) {
 		ReadTimeout:  cfg.ReadTimeout,
 		WriteTimeout: cfg.WriteTimeout,
 	})
+
+	// OTel 埋点：每个 Redis 命令自动产生 client span
+	// （main.go 中 redis.New 在 telemetry.Init 之后调用，能捕获到全局 TracerProvider）
+	if err := redisotel.InstrumentTracing(rdb); err != nil {
+		return nil, fmt.Errorf("redis instrument tracing: %w", err)
+	}
 
 	// 连接成功校验
 	ctx := context.Background()

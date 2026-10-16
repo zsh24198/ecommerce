@@ -403,11 +403,11 @@ func (s *seckillService) sendWithFallback(
 	var kafkaErr error
 	if s.kafkaBreaker != nil {
 		kafkaErr = s.kafkaBreaker.Execute(func() error {
-			_, _, err := s.producer.SendMessage(KafkaTopicSeckillOrder, key, payload)
+			_, _, err := s.producer.SendMessage(ctx, KafkaTopicSeckillOrder, key, payload)
 			return err
 		})
 	} else {
-		_, _, kafkaErr = s.producer.SendMessage(KafkaTopicSeckillOrder, key, payload)
+		_, _, kafkaErr = s.producer.SendMessage(ctx, KafkaTopicSeckillOrder, key, payload)
 	}
 
 	if kafkaErr == nil {
