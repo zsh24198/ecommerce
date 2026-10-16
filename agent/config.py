@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     rag_chunk_size: int = 300                      # 文档切分大小（字符数）
     rag_chunk_overlap: int = 50                    # 相邻片段重叠大小（字符数）
 
+    # 会话（上下文管理）—— 复用 Go 后端的 Redis
+    redis_url: str = "redis://localhost:6379/0"   # 会话存储地址
+    session_ttl_seconds: int = 1800                # 30 分钟无活动过期
+    session_max_messages: int = 20                 # 每会话最多保留条数
+
     # 告诉 pydantic-settings 去哪找配置
     model_config = SettingsConfigDict(
         env_file=".env",              # 可选：本地开发可以用 .env 文件

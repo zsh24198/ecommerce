@@ -3,3 +3,4 @@ uvicorn
 httpx
 pydantic-settings
 chromadb
+redis>=5.0.0

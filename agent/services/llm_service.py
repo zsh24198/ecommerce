@@ -6,6 +6,7 @@ import logging
 import httpx
 
 from config import settings
+from services.session_store import session_store
 from services.tools import TOOLS, execute_tool
 
 logger = logging.getLogger(__name__)
@@ -33,12 +34,12 @@ class LLMService:
     async def close(self):
         await self.client.aclose()
 
-    async def chat(self, user_input: str) -> str:
-        """Agent 主循环：用户输入 → 调工具（如有）→ 生成回复。"""
-        messages = [
-            {"role": "system", "content": self.SYSTEM_PROMPT},
-            {"role": "user", "content": user_input},
-        ]
+    async def chat(self, user_input: str, session_id: str) -> str:
+        """Agent 主循环：加载历史 → 调工具（如有）→ 生成回复 → 落库。"""
+        history = await session_store.load(session_id)
+        messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
+        messages.extend(history)
+        messages.append({"role": "user", "content": user_input})
 
         # 最多循环 5 次，防止 LLM 无限调工具
         for _ in range(5):
@@ -47,7 +48,13 @@ class LLMService:
             # 情况 1：LLM 直接返回文本，没有调工具
             tool_calls = response.get("tool_calls")
             if not tool_calls:
-                return response["content"]
+                reply = response["content"]
+                # 只持久化 user + 最终 assistant，工具轨迹不入库
+                await session_store.append(session_id, [
+                    {"role": "user", "content": user_input},
+                    {"role": "assistant", "content": reply},
+                ])
+                return reply
 
             # 情况 2：LLM 要调工具，执行并把结果塞回去
             messages.append({
@@ -71,7 +78,12 @@ class LLMService:
                 })
 
         # 循环超限兜底
-        return "抱歉，我没能在限定步数内完成查询，请稍后重试。"
+        fallback = "抱歉，我没能在限定步数内完成查询，请稍后重试。"
+        await session_store.append(session_id, [
+            {"role": "user", "content": user_input},
+            {"role": "assistant", "content": fallback},
+        ])
+        return fallback
 
     async def _call_llm(self, messages: list, tools: list = None) -> dict:
         """裸调百炼 OpenAI 兼容 API，返回 assistant message。"""

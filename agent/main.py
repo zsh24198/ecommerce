@@ -1,12 +1,15 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from typing import Optional
+
+from fastapi import FastAPI, Header, Response
 from pydantic import BaseModel
 
 from clients.go_backend import go_client, GoBackendError
 from config import settings
 from services.llm_service import llm_service
 from services.knowledge_base import knowledge_base
+from services.session_store import session_store
 
 
 @asynccontextmanager
@@ -20,6 +23,7 @@ async def lifespan(app: FastAPI):
     await go_client.close()
     await llm_service.close()
     await knowledge_base.close()
+    await session_store.close()
 
 
 app = FastAPI(title="Ecommerce Agent", lifespan=lifespan)
@@ -50,10 +54,16 @@ async def test_order():
 
 
 @app.post("/chat")
-async def chat(req: ChatRequest):
-    """Agent 主入口：接收用户自然语言，返回 LLM 生成的回复。"""
+async def chat(
+    req: ChatRequest,
+    response: Response,
+    x_session_id: Optional[str] = Header(default=None, alias="X-Session-Id"),
+):
+    """Agent 主入口：多轮对话，session_id 缺失则新建并回传。"""
     try:
-        reply = await llm_service.chat(req.message)
-        return {"code": 0, "msg": "ok", "data": {"reply": reply}}
+        session_id = x_session_id or session_store.new_session_id()
+        reply = await llm_service.chat(req.message, session_id)
+        response.headers["X-Session-Id"] = session_id
+        return {"code": 0, "msg": "ok", "data": {"reply": reply, "session_id": session_id}}
     except Exception as e:
         return {"code": 9999, "msg": f"Agent 处理失败: {e}", "data": None}
