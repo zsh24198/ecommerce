@@ -1,11 +1,28 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from pydantic import BaseModel
 
 from clients.go_backend import go_client, GoBackendError
 from config import settings
 from services.llm_service import llm_service
+from services.knowledge_base import knowledge_base
 
-app = FastAPI(title="Ecommerce Agent")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """服务启动/关闭时的生命周期钩子。"""
+    # 启动：构建知识库索引
+    count = knowledge_base.load_and_index()
+    print(f"[startup] 知识库索引完成，共 {count} 个片段")
+    yield
+    # 关闭：释放资源
+    await go_client.close()
+    await llm_service.close()
+    await knowledge_base.close()
+
+
+app = FastAPI(title="Ecommerce Agent", lifespan=lifespan)
 
 
 class ChatRequest(BaseModel):

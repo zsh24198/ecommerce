@@ -19,6 +19,7 @@ go.work.sum
 
 # Python agent
 agent/.venv/
+agent/data/
 __pycache__/
 *.pyc
 

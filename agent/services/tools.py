@@ -3,6 +3,7 @@
 import json
 
 from clients.go_backend import go_client, GoBackendError
+from services.knowledge_base import knowledge_base
 
 # 传给 LLM 的 JSON Schema 数组（OpenAI Function Calling 协议）
 # LLM 看到这个就知道：有 3 个工具，每个叫什么、接收什么参数、做什么
@@ -50,6 +51,23 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "query_knowledge",
+            "description": (
+                "查询电商业务知识库（促销规则、退换货政策、运费规则、商品使用说明等）。"
+                "当用户询问业务规则、政策、活动玩法等知识性问题时必须调用此工具，不得凭记忆回答。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "用户的问题原文，用于语义检索。"},
+                },
+                "required": ["question"],
+            },
+        },
+    },
 ]
 
 async def execute_tool(name: str, arguments: dict) -> str:
@@ -61,6 +79,8 @@ async def execute_tool(name: str, arguments: dict) -> str:
             data = await go_client.query_product(**arguments)
         elif name == "query_user":
             data = await go_client.query_user(**arguments)
+        elif name == "query_knowledge":
+            data = await knowledge_base.search(arguments["question"])
         else:
             return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
         return json.dumps({"success": True, "data": data}, ensure_ascii=False)
