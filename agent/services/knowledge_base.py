@@ -2,6 +2,7 @@
 
 import logging
 from pathlib import Path
+from typing import Optional
 
 import chromadb
 from chromadb.config import Settings as ChromaSettings
@@ -102,12 +103,12 @@ class KnowledgeBase:
 
     # ========== 检索：用户问题 → top-k 相关片段 ==========
 
-    async def search(self, query: str) -> list[dict]:
-        """用户问题向量化 → 检索 top-k → 返回片段+来源。"""
+    async def search(self, query: str, top_k: Optional[int] = None) -> list[dict]:
+        """用户问题向量化 → 检索 top-k → 返回片段+来源。top_k 缺省时回退到配置值。"""
         query_vec = await self._embed_one(query)
         results = self.collection.query(
             query_embeddings=[query_vec],
-            n_results=settings.rag_top_k,
+            n_results=top_k or settings.rag_top_k,
             include=["documents", "metadatas", "distances"],
         )
         docs = results["documents"][0]

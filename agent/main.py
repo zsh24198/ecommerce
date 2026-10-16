@@ -58,11 +58,12 @@ async def chat(
     req: ChatRequest,
     response: Response,
     x_session_id: Optional[str] = Header(default=None, alias="X-Session-Id"),
+    x_user_id: Optional[int] = Header(default=None, alias="X-User-Id"),
 ):
     """Agent 主入口：多轮对话，session_id 缺失则新建并回传。"""
     try:
         session_id = x_session_id or session_store.new_session_id()
-        reply = await llm_service.chat(req.message, session_id)
+        reply = await llm_service.chat(req.message, session_id, user_id=x_user_id)
         response.headers["X-Session-Id"] = session_id
         return {"code": 0, "msg": "ok", "data": {"reply": reply, "session_id": session_id}}
     except Exception as e:

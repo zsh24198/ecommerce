@@ -16,10 +16,10 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "user_id": {"type": "integer", "description": "用户 ID，用于校验订单归属。"},
+                    "user_id": {"type": "integer", "description": "用户 ID，由系统按登录态自动注入，无需向用户索取。"},
                     "order_no": {"type": "string", "description": "订单号，格式通常为时间戳加随机数。"},
                 },
-                "required": ["user_id", "order_no"],
+                "required": ["order_no"],
             },
         },
     },

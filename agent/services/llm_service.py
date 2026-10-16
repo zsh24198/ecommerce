@@ -2,6 +2,7 @@
 
 import json
 import logging
+from typing import Optional
 
 import httpx
 
@@ -19,6 +20,8 @@ class LLMService:
         "遇到以下两类问题时必须调用工具，不得凭记忆编造：\n"
         "1. 查询动态数据（订单状态、商品库存、用户信息）→ 调用 query_order / query_product / query_user\n"
         "2. 业务规则问题（促销活动、退换货政策、运费规则、商品使用说明）→ 调用 query_knowledge\n"
+        "查询订单时用户 ID 由系统自动注入，你只需关注订单号，无需向用户索取用户 ID。\n"
+        "如果用户没有提供查询所需的必要信息（如订单号、商品ID），应主动向用户询问，不要凭空编造。\n"
         "拿到工具结果后，用自然语言回复用户。如果知识库没有相关内容，如实告知用户。"
     )
 
@@ -34,7 +37,7 @@ class LLMService:
     async def close(self):
         await self.client.aclose()
 
-    async def chat(self, user_input: str, session_id: str) -> str:
+    async def chat(self, user_input: str, session_id: str, user_id: Optional[int] = None) -> str:
         """Agent 主循环：加载历史 → 调工具（如有）→ 生成回复 → 落库。"""
         history = await session_store.load(session_id)
         messages = [{"role": "system", "content": self.SYSTEM_PROMPT}]
@@ -67,6 +70,8 @@ class LLMService:
                 fn = tc["function"]
                 name = fn["name"]
                 args = json.loads(fn["arguments"])  # LLM 返回的 arguments 是字符串
+                if name == "query_order" and user_id is not None:
+                    args["user_id"] = user_id
 
                 logger.info(f"LLM 调用工具: {name}({args})")
                 result = await execute_tool(name, args)

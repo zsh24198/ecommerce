@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -33,6 +34,7 @@ import (
 	"github.com/zsh24198/ecommerce/shared/logger"
 	"github.com/zsh24198/ecommerce/shared/middleware"
 	"github.com/zsh24198/ecommerce/shared/redis"
+	"github.com/zsh24198/ecommerce/shared/telemetry"
 )
 
 func main() {
@@ -51,6 +53,21 @@ func main() {
 	// 根 ctx：进程收到 SIGINT/SIGTERM 时自动 cancel，Relay 等后台任务随之优雅退出
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// 2.1 初始化 OpenTelemetry：必须早于 db（GORM/Redis 埋点依赖全局 TracerProvider）。
+	// 用 Background 而非根 ctx：初始化不随请求生命周期取消。
+	shutdownTracer, err := telemetry.Init(context.Background(), cfg.Telemetry)
+	if err != nil {
+		logger.Fatal(ctx, "init telemetry failed", zap.Error(err))
+	}
+	defer func() {
+		// 退出时根 ctx 已 cancel，必须用新 context 给 Trace flush 留时间
+		flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTracer(flushCtx); err != nil {
+			logger.Error(ctx, "tracer shutdown failed", zap.Error(err))
+		}
+	}()
 
 	// 3. 连接数据库
 	dsn := fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=utf8mb4&parseTime=True&loc=Local",
@@ -77,6 +94,7 @@ func main() {
 	gin.SetMode(cfg.Server.Mode)
 	r := gin.New()
 	r.Use(middleware.Recovery())
+	r.Use(otelgin.Middleware(cfg.Telemetry.ServiceName))
 	r.Use(middleware.TraceID())
 	r.Use(middleware.Prometheus())
 	r.Use(middleware.CORS())

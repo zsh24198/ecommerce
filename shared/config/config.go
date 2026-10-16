@@ -15,14 +15,24 @@ type Config struct {
 	Kafka   KafkaConfig   `mapstructure:"kafka"`
 	Log     LogConfig     `mapstructure:"log"`
 	JWT     JWTConfig     `mapstructure:"jwt"`
-	Payment PaymentConfig `mapstructure:"payment"`
-	Agent   AgentConfig   `mapstructure:"agent"`
+	Payment   PaymentConfig   `mapstructure:"payment"`
+	Agent     AgentConfig     `mapstructure:"agent"`
+	Telemetry TelemetryConfig `mapstructure:"telemetry"`
 }
 
 // AgentConfig Agent 接入配置。
 // Token 是固定字符串，从环境变量 ECOMMERCE_AGENT_TOKEN 注入，禁止硬编码到代码。
 type AgentConfig struct {
 	Token string `mapstructure:"token"`
+}
+
+// TelemetryConfig OpenTelemetry 分布式追踪配置。
+type TelemetryConfig struct {
+	Enabled     bool    `mapstructure:"enabled"`
+	ServiceName string  `mapstructure:"service_name"`
+	Exporter    string  `mapstructure:"exporter"`
+	Endpoint    string  `mapstructure:"endpoint"`
+	SampleRatio float64 `mapstructure:"sample_ratio"`
 }
 
 type ServerConfig struct {

@@ -1,33 +1,20 @@
 package middleware
 
 import (
-	"crypto/rand"
-	"encoding/hex"
-
 	"github.com/gin-gonic/gin"
-	"github.com/zsh24198/ecommerce/shared/logger"
+	"go.opentelemetry.io/otel/trace"
 )
 
-// HeaderTraceID 与上游/网关约定透传的 header
+// HeaderTraceID 与上游/网关约定透传的 header，供前端/客服报障携带
 const HeaderTraceID = "X-Trace-ID"
 
+// TraceID 把当前 OTel server span 的 trace_id 写入响应头。
+// 必须在 otelgin 中间件之后注册（依赖其创建的 server span）。
 func TraceID() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		tid := c.GetHeader(HeaderTraceID)
-		if tid == "" {
-			tid = genTraceID()
+		if sc := trace.SpanContextFromContext(c.Request.Context()); sc.IsValid() {
+			c.Header(HeaderTraceID, sc.TraceID().String())
 		}
-		c.Request = c.Request.WithContext(logger.WithTraceID(c.Request.Context(), tid))
-		c.Header(HeaderTraceID, tid)
 		c.Next()
 	}
-}
-
-// genTraceID 16 字节随机数 → 32 位 hex；用标准库，不加 uuid 依赖
-func genTraceID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return ""
-	}
-	return hex.EncodeToString(b[:])
 }
