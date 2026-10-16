@@ -17,6 +17,7 @@ import (
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
+	"gorm.io/plugin/opentelemetry/tracing"
 
 	"github.com/zsh24198/ecommerce/internal/agent"
 	"github.com/zsh24198/ecommerce/internal/order"
@@ -78,6 +79,11 @@ func main() {
 	if err != nil {
 		logger.Fatal(ctx, "connect db failed", zap.Error(err))
 	}
+	// GORM 埋点：每条 SQL 自动产生 DB 子 span（依赖 2.1 的全局 TracerProvider）
+	// contrib 的 otelgorm 已从上游移除，改用 GORM 官方 OTel 插件
+	if err := db.Use(tracing.NewPlugin()); err != nil {
+		logger.Fatal(ctx, "init gorm otel tracing failed", zap.Error(err))
+	}
 
 	// 3.1 连接 Redis（用于幂等键等缓存场景）
 	rdb, err := redis.New(&cfg.Redis)
@@ -90,7 +96,7 @@ func main() {
 	jwtMgr := jwtx.NewManager(&cfg.JWT)
 	svc := user.NewUserService(repo, jwtMgr)
 
-	// 5. Gin 引擎 + 中间件（顺序：Recovery → TraceID → CORS → Logger）
+	// 5. Gin 引擎 + 中间件（顺序：Recovery → otelgin → TraceID → Prometheus → CORS → Logger）
 	gin.SetMode(cfg.Server.Mode)
 	r := gin.New()
 	r.Use(middleware.Recovery())

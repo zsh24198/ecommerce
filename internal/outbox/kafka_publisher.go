@@ -48,7 +48,7 @@ func (p *KafkaPublisher) Publish(ctx context.Context, evt *OutboxEvent) error {
 	}
 
 	topic := p.topicPrefix + evt.AggregateType
-	partition, offset, err := p.producer.SendMessage(topic, evt.AggregateID, data)
+	partition, offset, err := p.producer.SendMessage(ctx, topic, evt.AggregateID, data)
 	if err != nil {
 		return apperror.Wrap(apperror.CodeKafkaProduce, "kafka publish failed", err)
 	}
