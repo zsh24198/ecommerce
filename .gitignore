@@ -40,9 +40,8 @@ configs/config.yaml
 
 # Temporary test programs
 cmd/logtest/
-server
+/server
 /cmd/server/server
 *.exe
 *.test
-agent/.venv/
 agent/.venv/
