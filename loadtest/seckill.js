@@ -3,6 +3,9 @@ import { check, sleep } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
 import { SharedArray } from 'k6/data';
 
+// 200-299 正常响应 + 429 限流均视为成功（限流是预期行为）
+http.setResponseCallback(http.expectedStatuses({ min: 200, max: 299 }, 429));
+
 const tokens = new SharedArray('tokens', () =>
   JSON.parse(open('./tokens.json'))
 );
@@ -16,6 +19,7 @@ const successCount = new Counter('success_count');
 const soldOutCount = new Counter('soldout_count');
 const sysErrorCount = new Counter('syserror_count');
 const rateLimitedCount = new Counter('ratelimited_count');
+const alreadyBoughtCount = new Counter('alreadybought_count');
 
 export const options = {
   stages: [
@@ -32,7 +36,7 @@ export const options = {
 };
 
 export default function () {
-  const token = tokens[__VU % tokens.length].token;
+  const token = tokens[Math.floor(Math.random() * tokens.length)].token;
   const params = {
     headers: {
       'Content-Type': 'application/json',
@@ -52,6 +56,9 @@ export default function () {
   } else if (res.status === 200 && code === 5018) {
     soldOutCount.add(1);
     category = 'soldout';
+  } else if (res.status === 200 && code === 5022) {
+    alreadyBoughtCount.add(1);
+    category = 'alreadybought';
   } else if (res.status === 429) {
     rateLimitedCount.add(1);
     category = 'ratelimited';
@@ -60,7 +67,7 @@ export default function () {
   }
   check(res, {
     'classified': () => true,
-    'is success or soldout or ratelimited': () => category === 'success' || category === 'soldout' || category === 'ratelimited',
+    'is success or soldout or ratelimited or alreadybought': () => category === 'success' || category === 'soldout' || category === 'ratelimited' || category === 'alreadybought',
   });
 
   sleep(0.1);   // 每用户 10 QPS，控制总流量

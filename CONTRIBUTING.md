@@ -76,7 +76,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26'
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26'
       - name: Run tests
         run: go test -race -coverprofile=coverage.out ./...
       - name: Upload coverage
@@ -100,7 +100,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.26'
       - name: Build
         run: go build -o bin/server ./cmd/server
 ```
@@ -128,7 +128,8 @@ git push origin v0.1.0
 
 ### 必备工具
 
-- Go 1.22+
+- Go 1.26+
+  （go.mod 锁定 `go 1.26.0`，依赖链中存在要求更高 Go 版本的上游包）
 - Docker + Docker Compose
 - golangci-lint
 - migrate（数据库迁移）
